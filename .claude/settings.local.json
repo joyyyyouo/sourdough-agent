@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python scraper.py)",
+      "Bash(python3 -m pip install requests -q)",
+      "Bash(python3 /c/Users/horng/Documents/Projects/sourdough-agent/scraper.py)",
+      "Bash(python -m pip install langgraph-checkpoint-sqlite)",
+      "Read(//c/Users/horng/miniconda3/bin/**)",
+      "Read(//c/Users/horng/anaconda3/bin/**)",
+      "Read(//c/Users/horng/**)",
+      "Bash(/c/Users/horng/AppData/Local/Python/bin/pip install *)",
+      "Bash(/c/Users/horng/AppData/Local/Python/bin/python3 *)"
+    ]
+  }
+}
