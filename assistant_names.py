@@ -1,77 +1,14 @@
 import random
+from pathlib import Path
 
-ASSISTANT_NAMES = [
-    "Floury Potter",
-    "Dougharella",
-    "Bready McBreadface",
-    "Crustopher",
-    "Dough-natello",
-    "Cinnabun",
-    "Flourence",
-    "Glutenberg",
-    "Yeastopher",
-    "Bun Solo",
-    "Loafy Skywalker",
-    "Dough-bi-Wan",
-    "Breadwin",
-    "Kneady",
-    "Breadnard",
-    "Rye-an",
-    "Dough-lores",
-    "Proofie",
-    "Artie San",
-    "Crumbelina",
-    "Bread Pitt",
-    "Jane Dough",
-    "Danny DeVito-st",
-    "Pita Parker",
-    "Leonardo DiCapri-oat",
-    "Meryl Wheat",
-    "Ryeling Stones",
-    "Whole Wheatley",
-    "Ciabatta Bing",
-    "Sourdough Sam",
-    "Vincent Van Dough",
-    "Toast Malone",
-    "Bun-edict Cumberbatch",
-]
+from config import ADJECTIVES_PATH, ASSISTANT_NAMES_PATH
 
-ADJECTIVES = [
-    "Bubbly",
-    "Crusty",
-    "Tangy",
-    "Proofed",
-    "Fermented",
-    "Wild",
-    "Gassy",
-    "Floury",
-    "Chewy",
-    "Crispy",
-    "Rustic",
-    "Over-Proofed",
-    "Under-Proofed",
-    "Toasty",
-    "Artisanal",
-    "Hydrated",
-    "Golden",
-    "Friendly",
-    "Sweet",
-    "Graceful",
-    "Elegant",
-    "Responsible",
-    "Punctual",
-    "Wholesome",
-    "Upper-Crust",
-    "Half-Baked",
-    "Well-Kneaded",
-    "Reliable",
-    "Cheerful",
-    "Grain-y",
-    "Ever-so-supportive",
-]
+
+def _load(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines()
 
 
 def generate_assistant_name() -> str:
-    adjective = random.choice(ADJECTIVES)
-    name = random.choice(ASSISTANT_NAMES)
+    adjective = random.choice(_load(ADJECTIVES_PATH))
+    name = random.choice(_load(ASSISTANT_NAMES_PATH))
     return f"The {adjective} {name}"

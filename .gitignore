@@ -15,5 +15,8 @@ __pycache__/
 # Database
 *.db
 
+# Data files
+data/
+
 # Environment
 .env
