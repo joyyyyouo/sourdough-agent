@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 import db as db_module
 from config import DB_PATH
 from llm import make_llm
-from state import AgentState
+from state import AgentState, Node
 
 
 class SubmitIntake(BaseModel):
@@ -69,8 +69,8 @@ def _get_llm():
     return _llm
 
 
-def intake_node(state: AgentState) -> dict:
-    # Already done — pass through so the conditional edge routes to scheduler
+def collect_bake_context_node(state: AgentState) -> dict:
+    # Already done — pass through so the conditional edge routes to estimate_timeline
     if state.get("intake_complete"):
         return {}
 
@@ -87,7 +87,7 @@ def intake_node(state: AgentState) -> dict:
     # Gemini requires at least one human message; seed with a greeting on first turn
     history = clean_history or [
         {"role": "user", "content": "Hi, I'd like to plan a sourdough bake."}
-    ]  # noqa: E501
+    ]
     response = _get_llm().invoke([{"role": "system", "content": system}] + history)
 
     tool_calls = getattr(response, "tool_calls", []) or []
@@ -107,7 +107,7 @@ def intake_node(state: AgentState) -> dict:
         # Link the DB bake record back to the user session
         session_key = state.get("session_key")
         if not session_key:
-            raise ValueError("intake_node: session_key missing from state")
+            raise ValueError("collect_bake_context_node: session_key missing from state")
         db_module.update_session_bake_data(conn, session_key, session_id, "planning")
         conn.close()
 
@@ -116,16 +116,16 @@ def intake_node(state: AgentState) -> dict:
             "intake": intake_data,
             "intake_complete": True,
             "bake_session_id": session_id,
-            "current_node": "scheduler",
+            "current_node": Node.ESTIMATE_TIMELINE,
         }
 
     return {
         "messages": [response],
-        "current_node": "intake",
+        "current_node": Node.COLLECT_BAKE_CONTEXT,
     }
 
 
-def route_after_intake(state: AgentState) -> str:
+def route_after_collect_bake_context(state: AgentState) -> str:
     if state.get("intake_complete"):
-        return "scheduler"
+        return Node.ESTIMATE_TIMELINE
     return END

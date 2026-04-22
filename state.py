@@ -1,8 +1,19 @@
 import operator
+from enum import StrEnum
 from typing import Annotated, Literal
 
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
+
+
+class Node(StrEnum):
+    CHECK_READINESS = "check_readiness"
+    COLLECT_BAKE_CONTEXT = "collect_bake_context"
+    ESTIMATE_TIMELINE = "estimate_timeline"
+    CHECK_COMMITMENT = "check_commitment"
+    ADJUST_SCHEDULE = "adjust_schedule"
+    GUIDE_BAKE = "guide_bake"
+    DIAGNOSE_ISSUE = "diagnose_issue"
 
 
 class BakeIntake(TypedDict, total=False):
@@ -31,16 +42,7 @@ class AgentState(TypedDict):
     bake_session_id: int | None
     schedule: list[BakeStep] | None
     conflicts: list[dict] | None
-    current_node: Literal[
-        "assess_readiness",
-        "intake",
-        "scheduler",
-        "commitment",
-        "revision",
-        "bake_monitor",
-        "diagnostic",
-        "end",
-    ]
+    current_node: Node
     bot_name: str | None
 
     # Session linkage
@@ -56,6 +58,6 @@ class AgentState(TypedDict):
     weather_scraped_at: str | None  # ISO-8601 UTC
     weather_scrape_run_id: int | None
 
-    # Diagnostic output — set by diagnostic node, consumed by revision
+    # Diagnostic output — set by diagnose_issue node, consumed by adjust_schedule
     diagnosis: str | None
     revision_type: str | None  # "weather_change" | "timing" | "technique"

@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 from config import LLM_TEMPERATURE, LLM_TOP_P
 from llm import make_llm
-from state import AgentState
+from state import AgentState, Node
 
 ESSENTIALS = [
     "active sourdough starter",
@@ -105,7 +105,7 @@ def _get_llm():
     return _llm
 
 
-def assess_readiness_node(state: AgentState) -> dict:
+def check_readiness_node(state: AgentState) -> dict:
     if state.get("readiness_complete"):
         return {}
 
@@ -135,16 +135,16 @@ def assess_readiness_node(state: AgentState) -> dict:
             "messages": [response],
             "readiness_complete": True,
             "user_experience_level": args["experience_level"],
-            "current_node": "intake",
+            "current_node": Node.COLLECT_BAKE_CONTEXT,
         }
 
     return {
         "messages": [response],
-        "current_node": "assess_readiness",
+        "current_node": Node.CHECK_READINESS,
     }
 
 
-def route_after_readiness(state: AgentState) -> str:
+def route_after_check_readiness(state: AgentState) -> str:
     if state.get("readiness_complete"):
-        return "intake"
+        return Node.COLLECT_BAKE_CONTEXT
     return END

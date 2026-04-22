@@ -1,52 +1,52 @@
 from langgraph.graph import END, StateGraph
 
-from nodes.assess_readiness import assess_readiness_node, route_after_readiness
-from nodes.bake_monitor import bake_monitor_node, route_after_bake_monitor
-from nodes.commitment import commitment_node, route_after_commitment
-from nodes.diagnostic import diagnostic_node
-from nodes.intake import intake_node, route_after_intake
-from nodes.revision import revision_node
-from nodes.scheduler import scheduler_node
-from state import AgentState
+from nodes.adjust_schedule import adjust_schedule_node
+from nodes.check_commitment import check_commitment_node, route_after_check_commitment
+from nodes.check_readiness import check_readiness_node, route_after_check_readiness
+from nodes.collect_bake_context import collect_bake_context_node, route_after_collect_bake_context
+from nodes.diagnose_issue import diagnose_issue_node
+from nodes.estimate_timeline import estimate_timeline_node
+from nodes.guide_bake import guide_bake_node, route_after_guide_bake
+from state import AgentState, Node
 
 
 def build_graph(checkpointer=None):
     builder = StateGraph(AgentState)
 
-    builder.add_node("assess_readiness", assess_readiness_node)
-    builder.add_node("intake", intake_node)
-    builder.add_node("scheduler", scheduler_node)
-    builder.add_node("commitment", commitment_node)
-    builder.add_node("revision", revision_node)
-    builder.add_node("bake_monitor", bake_monitor_node)
-    builder.add_node("diagnostic", diagnostic_node)
+    builder.add_node(Node.CHECK_READINESS, check_readiness_node)
+    builder.add_node(Node.COLLECT_BAKE_CONTEXT, collect_bake_context_node)
+    builder.add_node(Node.ESTIMATE_TIMELINE, estimate_timeline_node)
+    builder.add_node(Node.CHECK_COMMITMENT, check_commitment_node)
+    builder.add_node(Node.ADJUST_SCHEDULE, adjust_schedule_node)
+    builder.add_node(Node.GUIDE_BAKE, guide_bake_node)
+    builder.add_node(Node.DIAGNOSE_ISSUE, diagnose_issue_node)
 
-    builder.set_entry_point("assess_readiness")
+    builder.set_entry_point(Node.CHECK_READINESS)
 
     builder.add_conditional_edges(
-        "assess_readiness",
-        route_after_readiness,
-        {"intake": "intake", END: END},
+        Node.CHECK_READINESS,
+        route_after_check_readiness,
+        {Node.COLLECT_BAKE_CONTEXT: Node.COLLECT_BAKE_CONTEXT, END: END},
     )
     builder.add_conditional_edges(
-        "intake",
-        route_after_intake,
-        {"scheduler": "scheduler", END: END},
+        Node.COLLECT_BAKE_CONTEXT,
+        route_after_collect_bake_context,
+        {Node.ESTIMATE_TIMELINE: Node.ESTIMATE_TIMELINE, END: END},
     )
-    builder.add_edge("scheduler", "commitment")
+    builder.add_edge(Node.ESTIMATE_TIMELINE, Node.CHECK_COMMITMENT)
     builder.add_conditional_edges(
-        "commitment",
-        route_after_commitment,
-        {"revision": "revision", "bake_monitor": "bake_monitor"},
+        Node.CHECK_COMMITMENT,
+        route_after_check_commitment,
+        {Node.ADJUST_SCHEDULE: Node.ADJUST_SCHEDULE, Node.GUIDE_BAKE: Node.GUIDE_BAKE},
     )
-    # After revision, re-present the updated schedule for confirmation
-    builder.add_edge("revision", "commitment")
+    # After adjusting, re-present the updated schedule for confirmation
+    builder.add_edge(Node.ADJUST_SCHEDULE, Node.CHECK_COMMITMENT)
     builder.add_conditional_edges(
-        "bake_monitor",
-        route_after_bake_monitor,
-        {"diagnostic": "diagnostic", END: END},
+        Node.GUIDE_BAKE,
+        route_after_guide_bake,
+        {Node.DIAGNOSE_ISSUE: Node.DIAGNOSE_ISSUE, END: END},
     )
-    # Diagnosis always feeds into revision to update the remaining schedule
-    builder.add_edge("diagnostic", "revision")
+    # Diagnosis always feeds into adjust_schedule to update the remaining schedule
+    builder.add_edge(Node.DIAGNOSE_ISSUE, Node.ADJUST_SCHEDULE)
 
     return builder.compile(checkpointer=checkpointer)
