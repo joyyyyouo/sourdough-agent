@@ -25,7 +25,7 @@ def _text(msg) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 st.set_page_config(page_title="Sourdough Scheduler", page_icon="🍞", layout="wide")
@@ -47,7 +47,8 @@ os.environ["GOOGLE_API_KEY"] = api_key
 # Session initialisation — persistent across browser sessions via URL param
 # ---------------------------------------------------------------------------
 if "graph" not in st.session_state:
-    checkpointer = SqliteSaver.from_conn_string(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    checkpointer = SqliteSaver(conn)
 
     session_key = st.query_params.get("s")
     session_row = None
