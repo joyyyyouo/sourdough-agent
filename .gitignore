@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+
+# Ruff
+.ruff_cache/
+
+# Streamlit
+.streamlit/
+
+# Database
+*.db
+
+# Environment
+.env

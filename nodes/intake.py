@@ -1,5 +1,4 @@
 import datetime
-import random
 import sqlite3
 
 from langgraph.graph import END
@@ -9,33 +8,6 @@ import db as db_module
 from config import DB_PATH
 from llm import make_llm
 from state import AgentState
-
-ASSISTANT_NAMES = [
-    "Floury Potter",
-    "Dougharella",
-    "Bready McBreadface",
-    "Crustopher",
-    "Dough-natello",
-    "Cinnabun",
-    "Flourence",
-    "Glutenberg",
-    "Yeastopher",
-    "Bun Solo",
-    "Loafy Skywalker",
-    "Dough-bi-Wan",
-    "Breadwin",
-    "Kneady",
-    "Breadnard",
-    "Rye-an",
-    "Dough-lores",
-    "Proofie",
-    "Artie San",
-    "Crumbelina",
-]
-
-
-def random_name() -> str:
-    return random.choice(ASSISTANT_NAMES)
 
 
 class SubmitIntake(BaseModel):

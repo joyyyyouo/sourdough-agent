@@ -8,9 +8,9 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 import db as db_module
+from assistant_names import generate_assistant_name
 from config import DB_PATH
 from graph import build_graph
-from nodes.intake import random_name
 
 
 def _text(msg) -> str:
@@ -73,7 +73,7 @@ if "graph" not in st.session_state:
         # New user (or expired/invalid session key)
         session_key = str(uuid.uuid4())
         thread_id = str(uuid.uuid4())
-        bot_name = random_name()
+        bot_name = generate_assistant_name()
         now = _now_iso()
 
         graph = build_graph(checkpointer)
