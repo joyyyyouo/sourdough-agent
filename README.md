@@ -22,8 +22,10 @@ Sessions persist across browser closes — bookmark your URL and pick up exactly
 
 ## Setup
 
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
+
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 You'll need a Google API key with the Gemini API enabled. Get one at [aistudio.google.com](https://aistudio.google.com).
@@ -31,7 +33,7 @@ You'll need a Google API key with the Gemini API enabled. Get one at [aistudio.g
 ## Running
 
 ```bash
-streamlit run app.py
+uv run streamlit run app.py
 ```
 
 Enter your Google API key in the sidebar. Your session URL will look like `http://localhost:8501/?s=<uuid>` — bookmark it to return to your bake later.
@@ -39,7 +41,7 @@ Enter your Google API key in the sidebar. Your session URL will look like `http:
 To refresh the weather forecast data:
 
 ```bash
-python scraper.py
+uv run python scraper.py
 ```
 
 This can be run as a cron job to keep forecasts current during a long bake.

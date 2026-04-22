@@ -1,7 +1,0 @@
-requests
-ruff
-langgraph>=0.2.0
-langgraph-checkpoint-sqlite>=2.0.0
-langchain-google-genai>=2.0.0
-langchain-core>=0.3.0
-streamlit>=1.35.0
