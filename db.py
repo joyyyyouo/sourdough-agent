@@ -73,8 +73,9 @@ def init_db(path: str) -> sqlite3.Connection:
     try:
         conn.execute("ALTER TABLE bake_sessions ADD COLUMN thread_id TEXT")
         conn.commit()
-    except sqlite3.OperationalError:
-        pass  # column already exists
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
 
     conn.commit()
     return conn
@@ -86,9 +87,9 @@ def insert_scrape_run(conn: sqlite3.Connection, scraped_at: str) -> int:
     return cur.lastrowid
 
 
-def insert_forecasts(conn: sqlite3.Connection, scrape_run_id: int, rows: list) -> None:
+def insert_forecasts(conn: sqlite3.Connection, scrape_run_id: int, rows: list[dict]) -> None:
     conn.executemany(
-        "INSERT INTO forecasts (scrape_run_id, forecast_time, temperature_c, humidity_pct) VALUES (?, ?, ?, ?)",
+        "INSERT INTO forecasts (scrape_run_id, forecast_time, temperature_c, humidity_pct) VALUES (?, ?, ?, ?)",  # noqa: E501
         [(scrape_run_id, r["forecast_time"], r["temperature_c"], r["humidity_pct"]) for r in rows],
     )
     conn.commit()
@@ -115,7 +116,7 @@ def insert_bake_session(
 def insert_bake_schedule_steps(
     conn: sqlite3.Connection,
     bake_session_id: int,
-    steps: list,
+    steps: list[dict],
 ) -> None:
     conn.executemany(
         """INSERT INTO bake_schedules
@@ -138,7 +139,7 @@ def insert_bake_schedule_steps(
 def insert_user_availability(
     conn: sqlite3.Connection,
     bake_session_id: int,
-    conflicts: list,
+    conflicts: list[dict],
 ) -> None:
     conn.executemany(
         """INSERT INTO user_availability

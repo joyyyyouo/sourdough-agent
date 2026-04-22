@@ -19,8 +19,7 @@ def _text(msg) -> str:
     if isinstance(content, str):
         return content
     return "".join(
-        block.get("text", "") if isinstance(block, dict) else str(block)
-        for block in content
+        block.get("text", "") if isinstance(block, dict) else str(block) for block in content
     )
 
 
@@ -136,7 +135,9 @@ for msg in state_values.get("messages", []):
         st.markdown(text)
 
 if state_values.get("intake_complete"):
-    st.success("Intake complete! Your baking session has been saved. Schedule generation coming soon.")
+    st.success(
+        "Intake complete! Your baking session has been saved. Schedule generation coming soon."
+    )  # noqa: E501
 
 # ---------------------------------------------------------------------------
 # Chat input – at top level to pin to bottom of page
@@ -176,7 +177,8 @@ if not state_values.get("intake_complete"):
 
         last_ai = next(
             (
-                m for m in reversed(updated["messages"])
+                m
+                for m in reversed(updated["messages"])
                 if m.type == "ai" and not getattr(m, "tool_calls", None) and _text(m)
             ),
             None,

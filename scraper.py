@@ -1,18 +1,20 @@
 import datetime
+
 import requests
-from config import DB_PATH
-from db import init_db, insert_scrape_run, insert_forecasts
+
+from config import DB_PATH, WEATHER_LAT, WEATHER_LNG, WEATHER_TIMEOUT
+from db import init_db, insert_forecasts, insert_scrape_run
 
 API_URL = (
     "https://api.open-meteo.com/v1/forecast"
-    "?latitude=-37.8136&longitude=144.9631"
+    f"?latitude={WEATHER_LAT}&longitude={WEATHER_LNG}"
     "&hourly=temperature_2m,relativehumidity_2m"
     "&timezone=UTC"
 )
 
 
-def fetch_forecast() -> list:
-    resp = requests.get(API_URL, timeout=15)
+def fetch_forecast() -> list[dict]:
+    resp = requests.get(API_URL, timeout=WEATHER_TIMEOUT)
     resp.raise_for_status()
     data = resp.json()["hourly"]
     return [
@@ -31,7 +33,7 @@ def fetch_forecast() -> list:
 
 def main():
     rows = fetch_forecast()
-    scraped_at = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    scraped_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     conn = init_db(DB_PATH)
     run_id = insert_scrape_run(conn, scraped_at)

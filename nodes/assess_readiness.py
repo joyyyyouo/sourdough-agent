@@ -1,10 +1,8 @@
-import datetime
-
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END
 from pydantic import BaseModel, Field
 
-from config import LLM_MODEL
+from config import LLM_TEMPERATURE, LLM_TOP_P
+from llm import make_llm
 from state import AgentState
 
 ESSENTIALS = [
@@ -77,16 +75,23 @@ gently steer back to what they already have.\
 
 
 class SubmitReadiness(BaseModel):
-    """Call ONLY when the user has confirmed their experience level, understood the baking journey, and acknowledged the checklist."""
+    """Call ONLY when the user has confirmed their experience level,
+    understood the baking journey, and acknowledged the checklist."""
 
     experience_level: str = Field(
         description="User's sourdough experience: 'beginner', 'some_experience', or 'experienced'."
     )
     has_essentials: bool = Field(
-        description="True if the user confirmed they have all essential items; False if they are missing something but chose to proceed anyway."
+        description=(
+            "True if the user confirmed they have all essential items;"
+            " False if they are missing something but chose to proceed anyway."
+        )
     )
     missing_items: str = Field(
-        description="Comma-separated list of essential items the user said they are missing, or empty string if none."
+        description=(
+            "Comma-separated list of essential items the user said they are missing,"
+            " or empty string if none."
+        )
     )
 
 
@@ -96,11 +101,7 @@ _llm = None
 def _get_llm():
     global _llm
     if _llm is None:
-        _llm = ChatGoogleGenerativeAI(
-            model=LLM_MODEL,
-            temperature=1.4,
-            top_p=0.95,
-        ).bind_tools([SubmitReadiness])
+        _llm = make_llm([SubmitReadiness], temperature=LLM_TEMPERATURE, top_p=LLM_TOP_P)
     return _llm
 
 
@@ -117,19 +118,16 @@ def assess_readiness_node(state: AgentState) -> dict:
 
     # Strip tool-call messages — Gemini rejects history containing tool calls without results
     clean_history = [
-        m for m in state["messages"]
+        m
+        for m in state["messages"]
         if getattr(m, "type", None) in ("human", "ai") and not getattr(m, "tool_calls", None)
     ]
     # Gemini requires at least one human message
     history = clean_history or [{"role": "user", "content": "Hi, I want to bake sourdough bread."}]
-    response = _get_llm().invoke(
-        [{"role": "system", "content": system}] + history
-    )
+    response = _get_llm().invoke([{"role": "system", "content": system}] + history)
 
     tool_calls = getattr(response, "tool_calls", []) or []
-    submit_call = next(
-        (tc for tc in tool_calls if tc["name"] == "SubmitReadiness"), None
-    )
+    submit_call = next((tc for tc in tool_calls if tc["name"] == SubmitReadiness.__name__), None)
 
     if submit_call:
         args = submit_call["args"]
