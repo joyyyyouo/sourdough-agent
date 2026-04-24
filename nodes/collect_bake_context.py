@@ -1,51 +1,32 @@
 import datetime
-import random
 import sqlite3
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 from pydantic import BaseModel, Field
 
 import db as db_module
-from config import DB_PATH, LLM_MODEL
-from state import AgentState
-
-ASSISTANT_NAMES = [
-    "Floury Potter",
-    "Dougharella",
-    "Bready McBreadface",
-    "Crustopher",
-    "Dough-natello",
-    "Cinnabun",
-    "Flourence",
-    "Glutenberg",
-    "Yeastopher",
-    "Bun Solo",
-    "Loafy Skywalker",
-    "Dough-bi-Wan",
-    "Breadwin",
-    "Kneady",
-    "Breadnard",
-    "Rye-an",
-    "Dough-lores",
-    "Proofie",
-    "Artie San",
-    "Crumbelina",
-]
-
-
-def random_name() -> str:
-    return random.choice(ASSISTANT_NAMES)
+from config import DB_PATH
+from llm import make_llm
+from nodes.utils import clean_history
+from state import AgentState, Node
 
 
 class SubmitIntake(BaseModel):
-    """Call this ONLY when all four fields have been confirmed by the user. Do not guess any field."""
+    """Call this ONLY when all four fields have been confirmed by the user.
+    Do not guess any field."""
 
     starter_health: str = Field(
-        description="How active/healthy the starter is right now. E.g. 'very active – doubled in 4 hours', 'sluggish – barely rose'."
+        description=(
+            "How active/healthy the starter is right now."
+            " E.g. 'very active – doubled in 4 hours', 'sluggish – barely rose'."
+        )
     )
     deadline: str = Field(
-        description="ISO-8601 datetime when the user wants a freshly baked loaf. E.g. '2026-04-22T09:00:00'."
+        description=(
+            "ISO-8601 datetime when the user wants a freshly baked loaf."
+            " E.g. '2026-04-22T09:00:00'."
+        )
     )
     last_fed_at: str = Field(
         description="ISO-8601 datetime of the starter's last feeding. E.g. '2026-04-21T07:00:00'."
@@ -53,6 +34,7 @@ class SubmitIntake(BaseModel):
     feeding_ratio: str = Field(
         description="Starter:flour:water ratio used when feeding. E.g. '1:1:1' or '1:5:5'."
     )
+
 
 INTAKE_SYSTEM_PROMPT = """\
 You are {bot_name}, a warm and knowledgeable sourdough baking assistant. \
@@ -85,37 +67,36 @@ _llm = None
 def _get_llm():
     global _llm
     if _llm is None:
-        _llm = ChatGoogleGenerativeAI(model=LLM_MODEL).bind_tools([SubmitIntake])
+        _llm = make_llm([SubmitIntake])
     return _llm
 
 
-def intake_node(state: AgentState) -> dict:
-    # Already done — pass through so the conditional edge routes to scheduler
+def collect_bake_context_node(state: AgentState, config: RunnableConfig) -> dict:
+    # Already done — pass through so the conditional edge routes to estimate_timeline
     if state.get("intake_complete"):
         return {}
 
-    today = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     bot_name = state.get("bot_name") or "Doughy"
     system = INTAKE_SYSTEM_PROMPT.format(today=today, bot_name=bot_name)
 
-    # Strip tool-call messages — Gemini rejects history containing tool calls without results
-    clean_history = [
-        m for m in state["messages"]
-        if getattr(m, "type", None) in ("human", "ai") and not getattr(m, "tool_calls", None)
-    ]
-    # Gemini requires at least one human message; seed with a greeting on first turn
-    history = clean_history or [{"role": "user", "content": "Hi, I'd like to plan a sourdough bake."}]
-    response = _get_llm().invoke(
-        [{"role": "system", "content": system}] + history
+    # Slice to messages after the SubmitReadiness tool call so the intake LLM
+    # only sees intake-phase context, not the preceding readiness conversation.
+    all_msgs = state["messages"]
+    last_tool_idx = max(
+        (i for i, m in enumerate(all_msgs) if getattr(m, "tool_calls", None)),
+        default=-1,
     )
+    intake_msgs = all_msgs[last_tool_idx + 1 :]
+    history = clean_history(intake_msgs, seed="Hi, I'd like to plan a sourdough bake.")
+    response = _get_llm().invoke([{"role": "system", "content": system}] + history)
 
     tool_calls = getattr(response, "tool_calls", []) or []
-    submit_call = next(
-        (tc for tc in tool_calls if tc["name"] == "SubmitIntake"), None
-    )
+    submit_call = next((tc for tc in tool_calls if tc["name"] == SubmitIntake.__name__), None)
 
     if submit_call:
         intake_data: dict = submit_call["args"]
+        thread_id = config.get("configurable", {}).get("thread_id")
         conn = sqlite3.connect(DB_PATH)
         session_id = db_module.insert_bake_session(
             conn,
@@ -124,11 +105,13 @@ def intake_node(state: AgentState) -> dict:
             deadline=intake_data["deadline"],
             last_fed_at=intake_data["last_fed_at"],
             feeding_ratio=intake_data["feeding_ratio"],
+            thread_id=thread_id,
         )
         # Link the DB bake record back to the user session
         session_key = state.get("session_key")
-        if session_key:
-            db_module.update_session_bake_data(conn, session_key, session_id, "planning")
+        if not session_key:
+            raise ValueError("collect_bake_context_node: session_key missing from state")
+        db_module.update_session_bake_data(conn, session_key, session_id, "planning")
         conn.close()
 
         return {
@@ -136,16 +119,14 @@ def intake_node(state: AgentState) -> dict:
             "intake": intake_data,
             "intake_complete": True,
             "bake_session_id": session_id,
-            "current_node": "scheduler",
         }
 
     return {
         "messages": [response],
-        "current_node": "intake",
     }
 
 
-def route_after_intake(state: AgentState) -> str:
+def route_after_collect_bake_context(state: AgentState) -> str:
     if state.get("intake_complete"):
-        return "scheduler"
+        return Node.ESTIMATE_TIMELINE
     return END

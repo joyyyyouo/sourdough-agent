@@ -8,9 +8,9 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 import db as db_module
+from assistant_names import generate_assistant_name
 from config import DB_PATH
 from graph import build_graph
-from nodes.intake import random_name
 
 
 def _text(msg) -> str:
@@ -19,8 +19,7 @@ def _text(msg) -> str:
     if isinstance(content, str):
         return content
     return "".join(
-        block.get("text", "") if isinstance(block, dict) else str(block)
-        for block in content
+        block.get("text", "") if isinstance(block, dict) else str(block) for block in content
     )
 
 
@@ -47,15 +46,14 @@ os.environ["GOOGLE_API_KEY"] = api_key
 # Session initialisation — persistent across browser sessions via URL param
 # ---------------------------------------------------------------------------
 if "graph" not in st.session_state:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    checkpointer = SqliteSaver(conn)
+    checkpointer_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    checkpointer = SqliteSaver(checkpointer_conn)
 
     session_key = st.query_params.get("s")
     session_row = None
 
     if session_key:
-        conn = sqlite3.connect(DB_PATH)
-        db_module.init_db(DB_PATH)  # ensure schema is up to date
+        conn = db_module.init_db(DB_PATH)
         session_row = db_module.get_user_session(conn, session_key)
         conn.close()
 
@@ -74,13 +72,12 @@ if "graph" not in st.session_state:
         # New user (or expired/invalid session key)
         session_key = str(uuid.uuid4())
         thread_id = str(uuid.uuid4())
-        bot_name = random_name()
+        bot_name = generate_assistant_name()
         now = _now_iso()
 
         graph = build_graph(checkpointer)
 
-        conn = sqlite3.connect(DB_PATH)
-        db_module.init_db(DB_PATH)
+        conn = db_module.init_db(DB_PATH)
         db_module.upsert_user_session(conn, session_key, thread_id, bot_name, now, now)
         conn.close()
 
@@ -97,7 +94,6 @@ if "graph" not in st.session_state:
                 "bake_session_id": None,
                 "schedule": None,
                 "conflicts": None,
-                "current_node": "assess_readiness",
                 "bot_name": bot_name,
                 "session_key": session_key,
                 "bake_phase": "planning",
@@ -136,7 +132,9 @@ for msg in state_values.get("messages", []):
         st.markdown(text)
 
 if state_values.get("intake_complete"):
-    st.success("Intake complete! Your baking session has been saved. Schedule generation coming soon.")
+    st.success(
+        "Intake complete! Your baking session has been saved. Schedule generation coming soon."
+    )  # noqa: E501
 
 # ---------------------------------------------------------------------------
 # Chat input – at top level to pin to bottom of page
@@ -176,7 +174,8 @@ if not state_values.get("intake_complete"):
 
         last_ai = next(
             (
-                m for m in reversed(updated["messages"])
+                m
+                for m in reversed(updated["messages"])
                 if m.type == "ai" and not getattr(m, "tool_calls", None) and _text(m)
             ),
             None,

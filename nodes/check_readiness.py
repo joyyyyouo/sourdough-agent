@@ -1,11 +1,10 @@
-import datetime
-
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END
 from pydantic import BaseModel, Field
 
-from config import LLM_MODEL
-from state import AgentState
+from config import LLM_TEMPERATURE, LLM_TOP_P
+from llm import make_llm
+from nodes.utils import clean_history
+from state import AgentState, Node
 
 ESSENTIALS = [
     "active sourdough starter",
@@ -77,16 +76,23 @@ gently steer back to what they already have.\
 
 
 class SubmitReadiness(BaseModel):
-    """Call ONLY when the user has confirmed their experience level, understood the baking journey, and acknowledged the checklist."""
+    """Call ONLY when the user has confirmed their experience level,
+    understood the baking journey, and acknowledged the checklist."""
 
     experience_level: str = Field(
         description="User's sourdough experience: 'beginner', 'some_experience', or 'experienced'."
     )
     has_essentials: bool = Field(
-        description="True if the user confirmed they have all essential items; False if they are missing something but chose to proceed anyway."
+        description=(
+            "True if the user confirmed they have all essential items;"
+            " False if they are missing something but chose to proceed anyway."
+        )
     )
     missing_items: str = Field(
-        description="Comma-separated list of essential items the user said they are missing, or empty string if none."
+        description=(
+            "Comma-separated list of essential items the user said they are missing,"
+            " or empty string if none."
+        )
     )
 
 
@@ -96,15 +102,11 @@ _llm = None
 def _get_llm():
     global _llm
     if _llm is None:
-        _llm = ChatGoogleGenerativeAI(
-            model=LLM_MODEL,
-            temperature=1.4,
-            top_p=0.95,
-        ).bind_tools([SubmitReadiness])
+        _llm = make_llm([SubmitReadiness], temperature=LLM_TEMPERATURE, top_p=LLM_TOP_P)
     return _llm
 
 
-def assess_readiness_node(state: AgentState) -> dict:
+def check_readiness_node(state: AgentState) -> dict:
     if state.get("readiness_complete"):
         return {}
 
@@ -115,21 +117,11 @@ def assess_readiness_node(state: AgentState) -> dict:
         nice_to_have="\n".join(f"   - {item}" for item in NICE_TO_HAVE),
     )
 
-    # Strip tool-call messages — Gemini rejects history containing tool calls without results
-    clean_history = [
-        m for m in state["messages"]
-        if getattr(m, "type", None) in ("human", "ai") and not getattr(m, "tool_calls", None)
-    ]
-    # Gemini requires at least one human message
-    history = clean_history or [{"role": "user", "content": "Hi, I want to bake sourdough bread."}]
-    response = _get_llm().invoke(
-        [{"role": "system", "content": system}] + history
-    )
+    history = clean_history(state["messages"], seed="Hi, I want to bake sourdough bread.")
+    response = _get_llm().invoke([{"role": "system", "content": system}] + history)
 
     tool_calls = getattr(response, "tool_calls", []) or []
-    submit_call = next(
-        (tc for tc in tool_calls if tc["name"] == "SubmitReadiness"), None
-    )
+    submit_call = next((tc for tc in tool_calls if tc["name"] == SubmitReadiness.__name__), None)
 
     if submit_call:
         args = submit_call["args"]
@@ -137,16 +129,14 @@ def assess_readiness_node(state: AgentState) -> dict:
             "messages": [response],
             "readiness_complete": True,
             "user_experience_level": args["experience_level"],
-            "current_node": "intake",
         }
 
     return {
         "messages": [response],
-        "current_node": "assess_readiness",
     }
 
 
-def route_after_readiness(state: AgentState) -> str:
+def route_after_check_readiness(state: AgentState) -> str:
     if state.get("readiness_complete"):
-        return "intake"
+        return Node.COLLECT_BAKE_CONTEXT
     return END
