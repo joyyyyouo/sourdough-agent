@@ -11,7 +11,6 @@ import db as db_module
 from assistant_names import generate_assistant_name
 from config import DB_PATH
 from graph import build_graph
-from state import Node
 
 
 def _text(msg) -> str:
@@ -95,7 +94,6 @@ if "graph" not in st.session_state:
                 "bake_session_id": None,
                 "schedule": None,
                 "conflicts": None,
-                "current_node": Node.CHECK_READINESS,
                 "bot_name": bot_name,
                 "session_key": session_key,
                 "bake_phase": "planning",

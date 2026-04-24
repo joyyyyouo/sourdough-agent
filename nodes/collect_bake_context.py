@@ -80,7 +80,15 @@ def collect_bake_context_node(state: AgentState, config: RunnableConfig) -> dict
     bot_name = state.get("bot_name") or "Doughy"
     system = INTAKE_SYSTEM_PROMPT.format(today=today, bot_name=bot_name)
 
-    history = clean_history(state["messages"], seed="Hi, I'd like to plan a sourdough bake.")
+    # Slice to messages after the SubmitReadiness tool call so the intake LLM
+    # only sees intake-phase context, not the preceding readiness conversation.
+    all_msgs = state["messages"]
+    last_tool_idx = max(
+        (i for i, m in enumerate(all_msgs) if getattr(m, "tool_calls", None)),
+        default=-1,
+    )
+    intake_msgs = all_msgs[last_tool_idx + 1 :]
+    history = clean_history(intake_msgs, seed="Hi, I'd like to plan a sourdough bake.")
     response = _get_llm().invoke([{"role": "system", "content": system}] + history)
 
     tool_calls = getattr(response, "tool_calls", []) or []
@@ -111,12 +119,10 @@ def collect_bake_context_node(state: AgentState, config: RunnableConfig) -> dict
             "intake": intake_data,
             "intake_complete": True,
             "bake_session_id": session_id,
-            "current_node": Node.ESTIMATE_TIMELINE,
         }
 
     return {
         "messages": [response],
-        "current_node": Node.COLLECT_BAKE_CONTEXT,
     }
 
 

@@ -42,7 +42,6 @@ class AgentState(TypedDict):
     bake_session_id: int | None
     schedule: list[BakeStep] | None
     conflicts: list[dict] | None
-    current_node: Node
     bot_name: str | None
 
     # Session linkage

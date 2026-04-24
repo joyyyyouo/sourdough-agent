@@ -129,12 +129,10 @@ def check_readiness_node(state: AgentState) -> dict:
             "messages": [response],
             "readiness_complete": True,
             "user_experience_level": args["experience_level"],
-            "current_node": Node.COLLECT_BAKE_CONTEXT,
         }
 
     return {
         "messages": [response],
-        "current_node": Node.CHECK_READINESS,
     }
 
 
