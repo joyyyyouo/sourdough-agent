@@ -1,12 +1,14 @@
 import datetime
 import sqlite3
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 from pydantic import BaseModel, Field
 
 import db as db_module
 from config import DB_PATH
 from llm import make_llm
+from nodes.utils import clean_history
 from state import AgentState, Node
 
 
@@ -69,7 +71,7 @@ def _get_llm():
     return _llm
 
 
-def collect_bake_context_node(state: AgentState) -> dict:
+def collect_bake_context_node(state: AgentState, config: RunnableConfig) -> dict:
     # Already done — pass through so the conditional edge routes to estimate_timeline
     if state.get("intake_complete"):
         return {}
@@ -78,16 +80,7 @@ def collect_bake_context_node(state: AgentState) -> dict:
     bot_name = state.get("bot_name") or "Doughy"
     system = INTAKE_SYSTEM_PROMPT.format(today=today, bot_name=bot_name)
 
-    # Strip tool-call messages — Gemini rejects history containing tool calls without results
-    clean_history = [
-        m
-        for m in state["messages"]
-        if getattr(m, "type", None) in ("human", "ai") and not getattr(m, "tool_calls", None)
-    ]
-    # Gemini requires at least one human message; seed with a greeting on first turn
-    history = clean_history or [
-        {"role": "user", "content": "Hi, I'd like to plan a sourdough bake."}
-    ]
+    history = clean_history(state["messages"], seed="Hi, I'd like to plan a sourdough bake.")
     response = _get_llm().invoke([{"role": "system", "content": system}] + history)
 
     tool_calls = getattr(response, "tool_calls", []) or []
@@ -95,6 +88,7 @@ def collect_bake_context_node(state: AgentState) -> dict:
 
     if submit_call:
         intake_data: dict = submit_call["args"]
+        thread_id = config.get("configurable", {}).get("thread_id")
         conn = sqlite3.connect(DB_PATH)
         session_id = db_module.insert_bake_session(
             conn,
@@ -103,6 +97,7 @@ def collect_bake_context_node(state: AgentState) -> dict:
             deadline=intake_data["deadline"],
             last_fed_at=intake_data["last_fed_at"],
             feeding_ratio=intake_data["feeding_ratio"],
+            thread_id=thread_id,
         )
         # Link the DB bake record back to the user session
         session_key = state.get("session_key")

@@ -102,12 +102,13 @@ def insert_bake_session(
     deadline: str,
     last_fed_at: str,
     feeding_ratio: str,
+    thread_id: str | None = None,
 ) -> int:
     cur = conn.execute(
         """INSERT INTO bake_sessions
-           (created_at, starter_health, deadline, last_fed_at, feeding_ratio)
-           VALUES (?, ?, ?, ?, ?)""",
-        (created_at, starter_health, deadline, last_fed_at, feeding_ratio),
+           (created_at, starter_health, deadline, last_fed_at, feeding_ratio, thread_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (created_at, starter_health, deadline, last_fed_at, feeding_ratio, thread_id),
     )
     conn.commit()
     return cur.lastrowid

@@ -47,15 +47,14 @@ os.environ["GOOGLE_API_KEY"] = api_key
 # Session initialisation — persistent across browser sessions via URL param
 # ---------------------------------------------------------------------------
 if "graph" not in st.session_state:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    checkpointer = SqliteSaver(conn)
+    checkpointer_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    checkpointer = SqliteSaver(checkpointer_conn)
 
     session_key = st.query_params.get("s")
     session_row = None
 
     if session_key:
-        conn = sqlite3.connect(DB_PATH)
-        db_module.init_db(DB_PATH)  # ensure schema is up to date
+        conn = db_module.init_db(DB_PATH)
         session_row = db_module.get_user_session(conn, session_key)
         conn.close()
 
@@ -79,8 +78,7 @@ if "graph" not in st.session_state:
 
         graph = build_graph(checkpointer)
 
-        conn = sqlite3.connect(DB_PATH)
-        db_module.init_db(DB_PATH)
+        conn = db_module.init_db(DB_PATH)
         db_module.upsert_user_session(conn, session_key, thread_id, bot_name, now, now)
         conn.close()
 

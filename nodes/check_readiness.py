@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 from config import LLM_TEMPERATURE, LLM_TOP_P
 from llm import make_llm
+from nodes.utils import clean_history
 from state import AgentState, Node
 
 ESSENTIALS = [
@@ -116,14 +117,7 @@ def check_readiness_node(state: AgentState) -> dict:
         nice_to_have="\n".join(f"   - {item}" for item in NICE_TO_HAVE),
     )
 
-    # Strip tool-call messages — Gemini rejects history containing tool calls without results
-    clean_history = [
-        m
-        for m in state["messages"]
-        if getattr(m, "type", None) in ("human", "ai") and not getattr(m, "tool_calls", None)
-    ]
-    # Gemini requires at least one human message
-    history = clean_history or [{"role": "user", "content": "Hi, I want to bake sourdough bread."}]
+    history = clean_history(state["messages"], seed="Hi, I want to bake sourdough bread.")
     response = _get_llm().invoke([{"role": "system", "content": system}] + history)
 
     tool_calls = getattr(response, "tool_calls", []) or []
