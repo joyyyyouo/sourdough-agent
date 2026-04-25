@@ -2,8 +2,8 @@ from langgraph.graph import END
 from pydantic import BaseModel, Field
 
 from config import LLM_TEMPERATURE, LLM_TOP_P
+from engine.nodes.utils import clean_history
 from llm import make_llm
-from nodes.utils import clean_history
 from state import AgentState, Node
 
 ESSENTIALS = [

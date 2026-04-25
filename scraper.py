@@ -3,7 +3,7 @@ import datetime
 import requests
 
 from config import DB_PATH, WEATHER_LAT, WEATHER_LNG, WEATHER_TIMEOUT
-from db import init_db, insert_forecasts, insert_scrape_run
+from infra.db import init_db, insert_forecasts, insert_scrape_run
 
 API_URL = (
     "https://api.open-meteo.com/v1/forecast"

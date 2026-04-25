@@ -5,10 +5,10 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 from pydantic import BaseModel, Field
 
-import db as db_module
+import infra.db as db_module
 from config import DB_PATH
+from engine.nodes.utils import clean_history
 from llm import make_llm
-from nodes.utils import clean_history
 from state import AgentState, Node
 
 
@@ -77,7 +77,7 @@ def collect_bake_context_node(state: AgentState, config: RunnableConfig) -> dict
         return {}
 
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    bot_name = state.get("bot_name") or "Doughy"
+    bot_name = state.get("bot_name") or "Delightful Doughy"
     system = INTAKE_SYSTEM_PROMPT.format(today=today, bot_name=bot_name)
 
     # Slice to messages after the SubmitReadiness tool call so the intake LLM
@@ -97,6 +97,8 @@ def collect_bake_context_node(state: AgentState, config: RunnableConfig) -> dict
     if submit_call:
         intake_data: dict = submit_call["args"]
         thread_id = config.get("configurable", {}).get("thread_id")
+        # TODO: move DB persistence out of the graph node into a post-invoke
+        # callback or service layer — nodes should be pure state transforms.
         conn = sqlite3.connect(DB_PATH)
         session_id = db_module.insert_bake_session(
             conn,
