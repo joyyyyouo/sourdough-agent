@@ -13,16 +13,6 @@ from config import DB_PATH
 from service import BakingAgentService
 
 
-def _text(msg) -> str:
-    """Extract plain text from a LangChain message, handling Gemini's list-of-blocks format."""
-    content = msg.content
-    if isinstance(content, str):
-        return content
-    return "".join(
-        block.get("text", "") if isinstance(block, dict) else str(block) for block in content
-    )
-
-
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -269,26 +259,12 @@ if "thread_id" not in st.session_state:
 
         st.query_params["s"] = session_key
 
-        # Seed the graph so the assistant generates its opening message
+        # Seed the agent so the assistant generates its opening message
         service.seed(
             thread_id,
             {
-                "messages": [],
-                "readiness_complete": False,
-                "user_experience_level": None,
-                "intake": {},
-                "intake_complete": False,
-                "bake_session_id": None,
-                "schedule": None,
-                "conflicts": None,
                 "bot_name": bot_name,
                 "session_key": session_key,
-                "bake_phase": "planning",
-                "completed_steps": [],
-                "weather_scraped_at": None,
-                "weather_scrape_run_id": None,
-                "diagnosis": None,
-                "revision_type": None,
             },
         )
 
@@ -302,14 +278,12 @@ if "thread_id" not in st.session_state:
 state_values = service.get_state(st.session_state.thread_id)
 
 for msg in state_values.get("messages", []):
-    if msg.type not in ("human", "ai"):
+    role = msg.get("role") if isinstance(msg, dict) else None
+    if role not in ("user", "assistant"):
         continue
-    if getattr(msg, "tool_calls", None):
-        continue
-    text = _text(msg)
+    text = msg.get("content", "") if isinstance(msg, dict) else ""
     if not text:
         continue
-    role = "assistant" if msg.type == "ai" else "user"
     avatar = "🍞" if role == "assistant" else "☕"
     with st.chat_message(role, avatar=avatar):
         st.markdown(text)
@@ -343,17 +317,10 @@ if not state_values.get("intake_complete"):
         )
         conn.close()
 
-        last_ai = next(
-            (
-                m
-                for m in reversed(updated["messages"])
-                if m.type == "ai" and not getattr(m, "tool_calls", None) and _text(m)
-            ),
-            None,
-        )
-        if last_ai:
+        response_text = updated.get("_response", "")
+        if response_text:
             with st.chat_message("assistant", avatar="🍞"):
-                st.markdown(_text(last_ai))
+                st.markdown(response_text)
 
         if updated.get("intake_complete"):
             st.rerun()
