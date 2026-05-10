@@ -1,5 +1,6 @@
 import datetime
 import sqlite3
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
@@ -28,7 +29,7 @@ back to the intake questions.
 - Always give examples or options to open-ended questions to help beginners answer \
 more precisely.
 - If the user gives a relative time like "this morning" or "tomorrow breakfast", \
-clarify and convert to an explicit date and time. Today (UTC) is {today}.
+clarify and convert to an explicit date and time. Today (Melbourne time) is {today}.
 - Once you have all five fields confirmed, call the `SubmitIntake` tool. \
 Do not call it until you are sure about every field.\
 """
@@ -74,8 +75,11 @@ def get_llm():
     return _llm
 
 
+_MELBOURNE_TZ = ZoneInfo("Australia/Melbourne")
+
+
 def build_system(bot_name: str) -> str:
-    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    today = datetime.datetime.now(_MELBOURNE_TZ).strftime("%Y-%m-%dT%H:%M:%S")
     return SYSTEM_PROMPT.format(today=today, bot_name=bot_name)
 
 

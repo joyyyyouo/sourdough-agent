@@ -3,6 +3,10 @@ import datetime
 from config import (
     PLAN_BENCH_REST_DURATION_MIN,
     PLAN_BULK_FERMENT_DURATION_MIN,
+    PLAN_BULK_FERMENT_MAX_MIN,
+    PLAN_BULK_FERMENT_MIN_MIN,
+    PLAN_BULK_FERMENT_Q10,
+    PLAN_BULK_FERMENT_REFERENCE_TEMP_C,
     PLAN_MIX_DURATION_MIN,
     PLAN_PROOF_DURATION_MIN,
     PLAN_SF_ACTIVE_MIN,
@@ -12,10 +16,34 @@ from config import (
 )
 
 
+def calc_bulk_ferment_duration(weather_weighted_temps: dict | None) -> int:
+    """Return bulk fermentation duration in minutes, adjusted for temperature.
+
+    Uses the Q10 biological model: fermentation rate doubles per 10°C increase.
+    Averages hour_0 and hour_2 temps — both fall within the bulk fermentation window.
+    Falls back to the config default if no temperature data is available.
+    """
+    temps = [
+        v
+        for k, v in (weather_weighted_temps or {}).items()
+        if k in ("hour_0", "hour_2") and v is not None
+    ]
+    if not temps:
+        return PLAN_BULK_FERMENT_DURATION_MIN
+
+    avg_temp = sum(temps) / len(temps)
+    adjusted = PLAN_BULK_FERMENT_DURATION_MIN * (
+        PLAN_BULK_FERMENT_Q10 ** ((PLAN_BULK_FERMENT_REFERENCE_TEMP_C - avg_temp) / 10)
+    )
+    return max(PLAN_BULK_FERMENT_MIN_MIN, min(PLAN_BULK_FERMENT_MAX_MIN, round(adjusted)))
+
+
 def build_schedule(state) -> list[dict]:
     """Compute a deterministic bake schedule from intake data and config durations."""
     start_iso = state.intake["earliest_start_time"]
     cursor = datetime.datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+
+    bulk_min = calc_bulk_ferment_duration(state.weather_weighted_temps)
 
     steps = []
 
@@ -38,7 +66,7 @@ def build_schedule(state) -> list[dict]:
             "step_id": "bulk_ferment",
             "label": "Bulk fermentation",
             "start_iso": cursor.isoformat(),
-            "duration_min": PLAN_BULK_FERMENT_DURATION_MIN,
+            "duration_min": bulk_min,
             "substep": False,
         }
     )
@@ -57,7 +85,7 @@ def build_schedule(state) -> list[dict]:
         )
         sf_cursor += datetime.timedelta(minutes=PLAN_SF_INTERVAL_MIN)
 
-    cursor += datetime.timedelta(minutes=PLAN_BULK_FERMENT_DURATION_MIN)
+    cursor += datetime.timedelta(minutes=bulk_min)
 
     # Shaping
     steps.append(
