@@ -280,10 +280,28 @@ def _do_fetch_weather(state: AgentState) -> AgentState:
     return state
 
 
+def _do_plan(state: AgentState) -> AgentState:
+    """Compute the bake schedule and append it as a formatted table message."""
+    from engine.stages import plan as plan_module
+
+    schedule = plan_module.build_schedule(state)
+    state.schedule = schedule
+    table = plan_module.format_schedule(schedule)
+    message = f"Here's your bake schedule:\n\n```\n{table}\n```"
+    state.messages.append({"role": "assistant", "content": message})
+    return state
+
+
+_AUTO_STAGES = {"fetch_weather", "plan"}
+
+
 def run_auto_stages(state: AgentState) -> AgentState:
-    """Run stages that don't require user input (fetch_weather)."""
-    while state.stage == "fetch_weather":
-        state = _do_fetch_weather(state)
+    """Run stages that don't require user input (fetch_weather, plan)."""
+    while state.stage in _AUTO_STAGES:
+        if state.stage == "fetch_weather":
+            state = _do_fetch_weather(state)
+        elif state.stage == "plan":
+            state = _do_plan(state)
         next_stage = decide_next_stage(state)
         if next_stage != state.stage:
             state.stage_boundaries[next_stage] = len(state.messages)

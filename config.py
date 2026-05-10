@@ -21,3 +21,13 @@ WEATHER_TIMEOUT = 15  # scrape timeout
 WEATHER_DATA_STALE_THRESHOLD_S = 12 * 3600  # re-scrape if latest run is older than this
 
 TELEGRAM_BOT_TOKEN: str | None = os.getenv("TELEGRAM_BOT_TOKEN")
+
+# Bake schedule step durations
+PLAN_MIX_DURATION_MIN = 30
+PLAN_SF_COUNT = 4
+PLAN_SF_INTERVAL_MIN = 30  # gap between S&F sets; also offset of first set from bulk start
+PLAN_SF_ACTIVE_MIN = 5  # active time per S&F set
+PLAN_BULK_FERMENT_DURATION_MIN = 330  # 5h 30m — placeholder until weather logic is added
+PLAN_SHAPING_DURATION_MIN = 20
+PLAN_BENCH_REST_DURATION_MIN = 20
+PLAN_PROOF_DURATION_MIN = 720  # 12h cold proof

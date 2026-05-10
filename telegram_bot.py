@@ -188,14 +188,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    response_text = result.get("_response", "")
-    if response_text:
-        await update.message.reply_text(response_text)
+    for response in result.get("_responses") or []:
+        if response:
+            await update.message.reply_text(response)
 
-    if result.get("intake_complete"):
+    if result.get("schedule"):
         await update.message.reply_text(
-            "Intake complete! Your baking session has been saved. "
-            "Use /reset to start planning a new bake."
+            "Schedule locked in! Use /reset to start a new bake session."
         )
 
 

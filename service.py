@@ -58,11 +58,21 @@ class BakingAgentService:
         try:
             state_json = load_checkpoint(conn, thread_id)
             state = AgentState.from_json(state_json) if state_json else AgentState()
-            state, response = agent_step(state, message)
+            n_before = len(state.messages)
+            state, _ = agent_step(state, message)
             save_checkpoint(conn, thread_id, state.to_json())
         finally:
             conn.close()
 
+        # Collect every new assistant message added this turn (auto-stages like
+        # fetch_weather and plan can append multiple messages in one agent_step).
+        new_responses = [
+            m["content"]
+            for m in state.messages[n_before:]
+            if m.get("role") == "assistant" and m.get("content")
+        ]
+
         result = dataclasses.asdict(state)
-        result["_response"] = response
+        result["_responses"] = new_responses
+        result["_response"] = "\n\n".join(new_responses)
         return result
