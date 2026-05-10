@@ -22,12 +22,17 @@ def init_db(path: str) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_forecasts_time ON forecasts(forecast_time);
 
         CREATE TABLE IF NOT EXISTS bake_sessions (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at      TEXT NOT NULL,
-            starter_health  TEXT NOT NULL,
-            deadline        TEXT NOT NULL,
-            last_fed_at     TEXT NOT NULL,
-            feeding_ratio   TEXT NOT NULL
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at           TEXT NOT NULL,
+            starter_health       TEXT NOT NULL,
+            deadline             TEXT NOT NULL,
+            last_fed_at          TEXT NOT NULL,
+            feeding_ratio        TEXT NOT NULL,
+            earliest_start_time  TEXT,
+            scrape_run_id        INTEGER REFERENCES scrape_runs(id),
+            weather_hour0_temp_c REAL,
+            weather_hour2_temp_c REAL,
+            weather_hour5_temp_c REAL
         );
 
         CREATE TABLE IF NOT EXISTS bake_schedules (
@@ -67,15 +72,30 @@ def init_db(path: str) -> sqlite3.Connection:
 
         CREATE INDEX IF NOT EXISTS idx_user_sessions_key
             ON user_sessions(session_key);
+
+        CREATE TABLE IF NOT EXISTS agent_checkpoints (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_id   TEXT NOT NULL UNIQUE,
+            state_json  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
     """)
 
-    # Migration: add thread_id column to bake_sessions if not present
-    try:
-        conn.execute("ALTER TABLE bake_sessions ADD COLUMN thread_id TEXT")
-        conn.commit()
-    except sqlite3.OperationalError as e:
-        if "duplicate column name" not in str(e):
-            raise
+    # Migrations: add columns to bake_sessions if not present
+    for ddl in [
+        "ALTER TABLE bake_sessions ADD COLUMN thread_id TEXT",
+        "ALTER TABLE bake_sessions ADD COLUMN earliest_start_time TEXT",
+        "ALTER TABLE bake_sessions ADD COLUMN scrape_run_id INTEGER",
+        "ALTER TABLE bake_sessions ADD COLUMN weather_hour0_temp_c REAL",
+        "ALTER TABLE bake_sessions ADD COLUMN weather_hour2_temp_c REAL",
+        "ALTER TABLE bake_sessions ADD COLUMN weather_hour5_temp_c REAL",
+    ]:
+        try:
+            conn.execute(ddl)
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                raise
 
     conn.commit()
     return conn
@@ -102,13 +122,23 @@ def insert_bake_session(
     deadline: str,
     last_fed_at: str,
     feeding_ratio: str,
+    earliest_start_time: str | None = None,
     thread_id: str | None = None,
 ) -> int:
     cur = conn.execute(
         """INSERT INTO bake_sessions
-           (created_at, starter_health, deadline, last_fed_at, feeding_ratio, thread_id)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (created_at, starter_health, deadline, last_fed_at, feeding_ratio, thread_id),
+           (created_at, starter_health, deadline, last_fed_at, feeding_ratio,
+            earliest_start_time, thread_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            created_at,
+            starter_health,
+            deadline,
+            last_fed_at,
+            feeding_ratio,
+            earliest_start_time,
+            thread_id,
+        ),
     )
     conn.commit()
     return cur.lastrowid
@@ -182,6 +212,66 @@ def get_user_session(conn: sqlite3.Connection, session_key: str) -> dict | None:
         "SELECT * FROM user_sessions WHERE session_key = ?", (session_key,)
     ).fetchone()
     return dict(row) if row else None
+
+
+def save_checkpoint(conn: sqlite3.Connection, thread_id: str, state_json: str) -> None:
+    """Upsert the agent state JSON for a thread."""
+    now = (
+        __import__("datetime")
+        .datetime.now(__import__("datetime").timezone.utc)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    conn.execute(
+        """INSERT INTO agent_checkpoints (thread_id, state_json, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(thread_id) DO UPDATE SET state_json = excluded.state_json,
+                                                updated_at = excluded.updated_at""",
+        (thread_id, state_json, now),
+    )
+    conn.commit()
+
+
+def load_checkpoint(conn: sqlite3.Connection, thread_id: str) -> str | None:
+    """Return the state JSON for a thread, or None if not found."""
+    row = conn.execute(
+        "SELECT state_json FROM agent_checkpoints WHERE thread_id = ?", (thread_id,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def get_latest_scrape_run(conn: sqlite3.Connection) -> dict | None:
+    """Return {id, scraped_at} of the most recent scrape_run, or None."""
+    row = conn.execute("SELECT id, scraped_at FROM scrape_runs ORDER BY id DESC LIMIT 1").fetchone()
+    return {"id": row[0], "scraped_at": row[1]} if row else None
+
+
+def get_forecasts_for_run(conn: sqlite3.Connection, scrape_run_id: int) -> list[dict]:
+    """Return all forecast rows for a scrape_run, ordered by forecast_time."""
+    rows = conn.execute(
+        "SELECT forecast_time, temperature_c, humidity_pct FROM forecasts "
+        "WHERE scrape_run_id = ? ORDER BY forecast_time",
+        (scrape_run_id,),
+    ).fetchall()
+    return [{"forecast_time": r[0], "temperature_c": r[1], "humidity_pct": r[2]} for r in rows]
+
+
+def update_bake_session_weather(
+    conn: sqlite3.Connection,
+    bake_session_id: int,
+    scrape_run_id: int,
+    hour0: float | None,
+    hour2: float | None,
+    hour5: float | None,
+) -> None:
+    """Persist the scrape run and computed weighted temps onto the bake_session row."""
+    conn.execute(
+        """UPDATE bake_sessions
+           SET scrape_run_id = ?, weather_hour0_temp_c = ?,
+               weather_hour2_temp_c = ?, weather_hour5_temp_c = ?
+           WHERE id = ?""",
+        (scrape_run_id, hour0, hour2, hour5, bake_session_id),
+    )
+    conn.commit()
 
 
 def update_session_bake_data(

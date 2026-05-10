@@ -1,4 +1,9 @@
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 _DATA = Path(__file__).parent / "data"
 
@@ -10,6 +15,9 @@ LLM_MODEL = "gemini-2.5-flash"
 LLM_TEMPERATURE = 1.4
 LLM_TOP_P = 0.95
 
-WEATHER_LAT = -37.8136
+WEATHER_LAT = -37.8136  # Melbourne
 WEATHER_LNG = 144.9631
-WEATHER_TIMEOUT = 15
+WEATHER_TIMEOUT = 15  # scrape timeout
+WEATHER_DATA_STALE_THRESHOLD_S = 12 * 3600  # re-scrape if latest run is older than this
+
+TELEGRAM_BOT_TOKEN: str | None = os.getenv("TELEGRAM_BOT_TOKEN")

@@ -1,10 +1,7 @@
-from langgraph.graph import END
 from pydantic import BaseModel, Field
 
 from config import LLM_TEMPERATURE, LLM_TOP_P
-from engine.nodes.utils import clean_history
 from llm import make_llm
-from state import AgentState, Node
 
 ESSENTIALS = [
     "active sourdough starter",
@@ -22,7 +19,7 @@ NICE_TO_HAVE = [
     "bread lame or sharp razor for scoring",
 ]
 
-READINESS_SYSTEM_PROMPT = """\
+SYSTEM_PROMPT = """\
 You are {bot_name}, a sourdough baking assistant who is genuinely, infectiously \
 excited about bread. You love baking and you love helping people discover it.
 
@@ -99,44 +96,24 @@ class SubmitReadiness(BaseModel):
 _llm = None
 
 
-def _get_llm():
+def get_llm():
     global _llm
     if _llm is None:
         _llm = make_llm([SubmitReadiness], temperature=LLM_TEMPERATURE, top_p=LLM_TOP_P)
     return _llm
 
 
-def check_readiness_node(state: AgentState) -> dict:
-    if state.get("readiness_complete"):
-        return {}
-
-    bot_name = state.get("bot_name") or "Doughy"
-    system = READINESS_SYSTEM_PROMPT.format(
+def build_system(bot_name: str) -> str:
+    return SYSTEM_PROMPT.format(
         bot_name=bot_name,
         essentials="\n".join(f"   - {item}" for item in ESSENTIALS),
         nice_to_have="\n".join(f"   - {item}" for item in NICE_TO_HAVE),
     )
 
-    history = clean_history(state["messages"], seed="Hi, I want to bake sourdough bread.")
-    response = _get_llm().invoke([{"role": "system", "content": system}] + history)
 
-    tool_calls = getattr(response, "tool_calls", []) or []
-    submit_call = next((tc for tc in tool_calls if tc["name"] == SubmitReadiness.__name__), None)
-
-    if submit_call:
-        args = submit_call["args"]
-        return {
-            "messages": [response],
-            "readiness_complete": True,
-            "user_experience_level": args["experience_level"],
-        }
-
+def handle_submit(args: dict) -> dict:
+    """Return AgentState field updates when SubmitReadiness fires."""
     return {
-        "messages": [response],
+        "readiness_complete": True,
+        "user_experience_level": args["experience_level"],
     }
-
-
-def route_after_check_readiness(state: AgentState) -> str:
-    if state.get("readiness_complete"):
-        return Node.COLLECT_BAKE_CONTEXT
-    return END

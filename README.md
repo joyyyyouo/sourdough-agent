@@ -1,23 +1,24 @@
-# Sourdough Baking Assistant
+# Couch to Crust
 
 A conversational AI agent that builds a personalised sourdough baking schedule around your starter, your availability, and Melbourne's live weather forecast. Because sourdough is a 12+ hour process with a lot of moving parts.
 
 ## What it does
 
 1. **Readiness check** — learns your experience level and confirms you have the gear
-2. **Intake** — asks about your starter's health, when you last fed it, your feeding ratio, and when you want the loaf ready
-3. **Scheduling** *(coming soon)* — generates an hour-by-hour baking plan using your starter data and live Melbourne weather
-4. **Commitment** *(coming soon)* — presents the plan, lets you flag conflicts, and revises until you're happy
-5. **Bake monitoring** *(coming soon)* — walks you through each step, checks you in, and adapts if something goes sideways (dough too wet? weather changed? running late?)
+2. **Intake** — collects starter health, last feeding time, feeding ratio, your deadline, and the earliest you can start
+3. **Weather fetch** — pulls Melbourne's hourly forecast and samples temperature at hour 0, 2, and 5 of your bake window (fermentation speed is highly temperature-sensitive)
+4. **Scheduling** *(coming soon)* — generates an hour-by-hour baking plan from your starter data, deadline, and weather
+5. **Commitment** *(coming soon)* — presents the plan, lets you flag conflicts, and revises until you're happy
+6. **Bake monitoring** *(coming soon)* — walks you through each step, checks you in, and adapts if something goes sideways
 
-Sessions persist across browser closes — bookmark your URL and pick up exactly where you left off.
+Sessions persist across restarts — your conversation state is saved to SQLite and restored from your Telegram chat ID.
 
 ## Stack
 
-- **UI** — [Streamlit](https://streamlit.io)
-- **Agent orchestration** — [LangGraph](https://github.com/langchain-ai/langgraph)
+- **UI** — [Telegram bot](https://core.telegram.org/bots) via [python-telegram-bot](https://python-telegram-bot.org)
+- **Agent orchestration** — plain Python state machine (`engine/agent.py`)
 - **LLM** — Google Gemini 2.5 Flash via [LangChain Google GenAI](https://python.langchain.com/docs/integrations/chat/google_generative_ai/)
-- **Persistence** — SQLite (`sourdough.db`) for both structured bake data and LangGraph checkpoints
+- **Persistence** — SQLite (`data/sourdough.db`) for both structured bake data and agent checkpoints
 - **Weather** — [Open-Meteo](https://open-meteo.com) (free, no API key required)
 
 ## Setup
@@ -28,66 +29,93 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
 uv sync
 ```
 
-You'll need a Google API key with the Gemini API enabled. Get one at [aistudio.google.com](https://aistudio.google.com).
+Copy `.env.example` to `.env` and fill in both values:
+
+```
+GOOGLE_API_KEY=...       # https://aistudio.google.com
+TELEGRAM_BOT_TOKEN=...   # from @BotFather on Telegram
+```
 
 ## Running
 
 ```bash
-uv run streamlit run app.py
+uv run python telegram_bot.py
 ```
 
-Enter your Google API key in the sidebar. Your session URL will look like `http://localhost:8501/?s=<uuid>` — bookmark it to return to your bake later.
+Bot commands:
+- `/start` — resume your session (or start a new one if none exists)
+- `/reset` — wipe your session and start a completely fresh bake
+- `/help` — show available commands
 
-To refresh the weather forecast data:
+To manually refresh the weather forecast:
 
 ```bash
 uv run python scraper.py
 ```
 
-This can be run as a cron job to keep forecasts current during a long bake.
+The scraper fetches 7 days of hourly Melbourne temperature and humidity from Open-Meteo and writes them to `data/sourdough.db`. The `fetch_weather` stage triggers this automatically if the last scrape is more than 12 hours old.
+
+## Running tests
+
+```bash
+uv run pytest tests/ -v
+```
 
 ## Project structure
 
 ```
-app.py          Streamlit UI and session management
-graph.py        LangGraph StateGraph — nodes and edges
-state.py        AgentState schema
-config.py       DB path and model name
-db.py           SQLite schema and helpers
-scraper.py      Open-Meteo weather fetcher
+telegram_bot.py     Telegram bot entry point and session management
+service.py          BakingAgentService — boundary between UI and engine
+scraper.py          CLI shim → delegates to engine/weather.py
+config.py           DB path, model name, weather coordinates, env vars
 
-nodes/
-  assess_readiness.py   Experience check + kit check
-  intake.py             Starter info and deadline collection
-  scheduler.py          Schedule generation (stub)
-  commitment.py         Schedule review loop (stub)
-  revision.py           Schedule revision (stub)
-  bake_monitor.py       Step-by-step bake check-in (stub)
-  diagnostic.py         Mid-bake issue diagnosis (stub)
+engine/
+  agent.py          State machine loop, stage transitions, LLM calls
+  weather.py        Open-Meteo fetch, DB persistence, time-weighted temp calculation
+
+  stages/
+    readiness.py    Experience check + equipment checklist (SubmitReadiness tool)
+    intake.py       Starter info, deadline, earliest start time (SubmitIntake tool)
+
+infra/
+  db.py             SQLite schema, migrations, and query helpers
+
+tests/
+  test_agent.py     State machine transitions, serialisation, tool dispatch
+  test_weather.py   Time-weighted temperature calculation
 ```
 
-## Graph topology
+## Stage machine
 
 ```
-assess_readiness
-    → intake
-    → scheduler
-    → commitment ←─────────────────────┐
-         │                             │
-    [conflicts]                        │
-         → revision ───────────────────┘
+assess_readiness        ← implemented
+    → collect_context   ← implemented
+    → fetch_weather     ← implemented (auto-stage, no user input)
+    → plan              ← stub
+    → commit ←──────────────────────┐
+         │                          │
+    [conflicts]                     │
+         → plan ────────────────────┘
     [confirmed]
-         → bake_monitor
-              │
-         [issue reported]
-              → diagnostic → revision
-         [all steps done]
-              → END
+         → guide
+         → complete
 ```
 
 ## Session persistence
 
-Each browser session is assigned a `session_key` stored in the URL (`?s=<uuid>`). LangGraph checkpoints are written to `sourdough.db` via `SqliteSaver`, so the full conversation state — message history, bake data, completed steps — survives app restarts. The `user_sessions` table links the session key to the LangGraph thread ID and the bake record.
+Each Telegram user is identified by their `chat_id`, used as the session key in `user_sessions`. The full `AgentState` is serialised to JSON and written to `agent_checkpoints` after every message, so state survives bot restarts. Use `/reset` to start a fresh session under the same Telegram account.
+
+## Weather and fermentation
+
+Bulk fermentation speed depends heavily on ambient temperature. The `fetch_weather` stage samples Melbourne's forecast at three points in the bake window:
+
+| Checkpoint | Why |
+|---|---|
+| Hour 0 (start) | Sets the baseline for bulk ferment speed |
+| Hour 2 | Captures any mid-morning temperature swing |
+| Hour 5 | Reflects conditions during shaping / cold proof handoff |
+
+These values are stored on the `bake_sessions` row (`weather_hour0/2/5_temp_c`) alongside the `scrape_run_id` so the schedule can be reproduced exactly given only the session record.
 
 ## Gear checklist
 
