@@ -305,7 +305,8 @@ def agent_step(state: AgentState, user_input: str) -> tuple[AgentState, str]:
     state = agent_brain(state, llm_output)
 
     response_text = llm_output["text"]
-    state.messages.append({"role": "assistant", "content": response_text})
+    if response_text:
+        state.messages.append({"role": "assistant", "content": response_text})
 
     next_stage = decide_next_stage(state)
     if next_stage != state.stage:
@@ -313,5 +314,13 @@ def agent_step(state: AgentState, user_input: str) -> tuple[AgentState, str]:
     state.stage = next_stage
 
     state = run_auto_stages(state)
+
+    # Gemini sometimes returns a tool call with no accompanying text. When that
+    # happens, generate a follow-up so the user always gets a reply.
+    if not response_text:
+        follow_up = generate_response(state)
+        response_text = follow_up["text"]
+        if response_text:
+            state.messages.append({"role": "assistant", "content": response_text})
 
     return state, response_text

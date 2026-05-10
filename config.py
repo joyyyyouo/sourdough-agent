@@ -1,4 +1,9 @@
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 _DATA = Path(__file__).parent / "data"
 
@@ -15,13 +20,4 @@ WEATHER_LNG = 144.9631
 WEATHER_TIMEOUT = 15  # scrape timeout
 WEATHER_DATA_STALE_THRESHOLD_S = 12 * 3600  # re-scrape if latest run is older than this
 
-# Default durations
-{
-    "autolyse_time_hours": 0.5,
-    "bulk_fermentation_time_hours": 5.5,
-    "bench_rest_time_hours": 0.33,
-    "final_proof_time_hours": {
-        "room_temp": 2.5,
-        "cold_retard": 12,
-    },
-}
+TELEGRAM_BOT_TOKEN: str | None = os.getenv("TELEGRAM_BOT_TOKEN")
