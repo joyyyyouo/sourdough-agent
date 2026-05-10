@@ -281,14 +281,16 @@ def _do_fetch_weather(state: AgentState) -> AgentState:
 
 
 def _do_plan(state: AgentState) -> AgentState:
-    """Compute the bake schedule and append it as a formatted table message."""
+    """Compute the bake schedule (deadline-optimised) and append it as a message."""
     from engine.stages import plan as plan_module
 
-    schedule = plan_module.build_schedule(state)
+    schedule, notes = plan_module.build_optimized_schedule(state)
     state.schedule = schedule
     table = plan_module.format_schedule(schedule)
-    message = f"Here's your bake schedule:\n\n```\n{table}\n```"
-    state.messages.append({"role": "assistant", "content": message})
+
+    parts = [f"Here's your bake schedule:\n\n```\n{table}\n```"]
+    parts.extend(notes)
+    state.messages.append({"role": "assistant", "content": "\n\n".join(parts)})
     return state
 
 
@@ -331,11 +333,14 @@ def agent_step(state: AgentState, user_input: str) -> tuple[AgentState, str]:
         state.stage_boundaries[next_stage] = len(state.messages)
     state.stage = next_stage
 
+    n_before_auto = len(state.messages)
     state = run_auto_stages(state)
+    auto_appended = len(state.messages) > n_before_auto
 
     # Gemini sometimes returns a tool call with no accompanying text. When that
-    # happens, generate a follow-up so the user always gets a reply.
-    if not response_text:
+    # happens, generate a follow-up so the user always gets a reply — but only
+    # if auto-stages didn't already produce output (e.g. the plan schedule).
+    if not response_text and not auto_appended:
         follow_up = generate_response(state)
         response_text = follow_up["text"]
         if response_text:
