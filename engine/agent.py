@@ -52,10 +52,16 @@ class AgentState:
     completed_steps: list = field(default_factory=list)
     conflicts: list = field(default_factory=list)
 
+    # plan metadata (populated by _do_plan, consumed by commit stage)
+    plan_enjoy_iso: str | None = None
+    plan_deadline_delta_min: int | None = None
+    plan_adjustments: dict | None = None
+
     # bake lifecycle
     bake_phase: str = "planning"  # planning | monitoring | complete
     bake_session_id: int | None = None
     readiness_complete: bool = False
+    committed: bool = False
 
     # diagnosis
     diagnosis: str | None = None
@@ -91,7 +97,11 @@ def decide_next_stage(state: AgentState) -> str:
         return "commit" if state.schedule else "plan"
 
     if s == "commit":
-        return "guide" if not state.conflicts else "plan"
+        if state.committed:
+            return "guide"
+        if not state.schedule:  # deadline was updated — re-plan
+            return "plan"
+        return "commit"
 
     if s == "guide":
         all_done = bool(state.schedule) and set(state.completed_steps) >= {
@@ -122,6 +132,13 @@ def build_prompt(state: AgentState) -> list[dict]:
         start = state.stage_boundaries.get("collect_context", 0)
         history = state.messages[start:]
 
+    elif state.stage == "commit":
+        from engine.stages import commit
+
+        system = commit.build_system(bot_name, state)
+        start = state.stage_boundaries.get("commit", 0)
+        history = state.messages[start:]
+
     else:
         system = f"You are {bot_name}, a sourdough baking assistant. Stage: {state.stage}"
         history = state.messages[-10:]
@@ -138,12 +155,14 @@ def build_prompt(state: AgentState) -> list[dict]:
 
 
 def _get_stage_llm(stage: str):
-    from engine.stages import intake, readiness
+    from engine.stages import commit, intake, readiness
 
     if stage == "assess_readiness":
         return readiness.get_llm()
     if stage == "collect_context":
         return intake.get_llm()
+    if stage == "commit":
+        return commit.get_llm()
     return make_llm()
 
 
@@ -197,6 +216,28 @@ def agent_brain(state: AgentState, llm_output: dict) -> AgentState:
         updates = intake.handle_submit(args, state.session_key, state.thread_id)
         for k, v in updates.items():
             setattr(state, k, v)
+
+    elif state.stage == "commit" and name == "CommitPlan":
+        state.committed = True
+        conn = db.init_db(DB_PATH)
+        try:
+            if state.bake_session_id:
+                db.record_commitment(
+                    conn,
+                    state.bake_session_id,
+                    state.plan_enjoy_iso,
+                    state.plan_adjustments or {},
+                    state.schedule,
+                )
+        finally:
+            conn.close()
+
+    elif state.stage == "commit" and name == "UpdateDeadline":
+        state.intake = {**state.intake, "deadline": args["new_deadline_iso"]}
+        state.schedule = []
+        state.plan_enjoy_iso = None
+        state.plan_deadline_delta_min = None
+        state.plan_adjustments = None
 
     return state
 
@@ -281,29 +322,54 @@ def _do_fetch_weather(state: AgentState) -> AgentState:
 
 
 def _do_plan(state: AgentState) -> AgentState:
-    """Compute the bake schedule (deadline-optimised) and append it as a message."""
+    """Compute the bake schedule (deadline-optimised) and store metadata on state."""
     from engine.stages import plan as plan_module
 
-    schedule, notes = plan_module.build_optimized_schedule(state)
+    schedule, _notes, variant = plan_module.build_optimized_schedule(state)
     state.schedule = schedule
-    table = plan_module.format_schedule(schedule)
 
-    parts = [f"Here's your bake schedule:\n\n```\n{table}\n```"]
-    parts.extend(notes)
-    state.messages.append({"role": "assistant", "content": "\n\n".join(parts)})
+    enjoy_step = next((s for s in schedule if s["step_id"] == "enjoy"), None)
+    if enjoy_step:
+        state.plan_enjoy_iso = enjoy_step["start_iso"]
+        deadline_iso = state.intake.get("deadline")
+        if deadline_iso:
+            deadline_dt = datetime.datetime.fromisoformat(deadline_iso)
+            enjoy_dt = datetime.datetime.fromisoformat(enjoy_step["start_iso"])
+            state.plan_deadline_delta_min = int((enjoy_dt - deadline_dt).total_seconds() / 60)
+
+    state.plan_adjustments = {
+        "warm_water_bulk": bool(variant.get("warm_water_bulk")),
+        "room_temp_proof": bool(variant.get("room_temp_proof")),
+        "bench_rest_skipped": bool(variant.get("skip_bench_rest")),
+    }
     return state
 
 
-_AUTO_STAGES = {"fetch_weather", "plan"}
+def _do_commit_present(state: AgentState) -> AgentState:
+    """Generate and append the commit presentation message via the commit LLM."""
+    llm_output = generate_response(state)
+    text = llm_output["text"]
+    if text:
+        state.messages.append({"role": "assistant", "content": text})
+    state = agent_brain(state, llm_output)
+    return state
 
 
 def run_auto_stages(state: AgentState) -> AgentState:
-    """Run stages that don't require user input (fetch_weather, plan)."""
-    while state.stage in _AUTO_STAGES:
+    """Run non-interactive stages including the initial commit presentation."""
+    for _ in range(20):  # safety cap
         if state.stage == "fetch_weather":
             state = _do_fetch_weather(state)
         elif state.stage == "plan":
             state = _do_plan(state)
+        elif state.stage == "commit" and state.stage_boundaries.get("commit") == len(
+            state.messages
+        ):
+            # Just entered commit with no messages yet — generate the presentation.
+            state = _do_commit_present(state)
+        else:
+            break
+
         next_stage = decide_next_stage(state)
         if next_stage != state.stage:
             state.stage_boundaries[next_stage] = len(state.messages)

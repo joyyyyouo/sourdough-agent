@@ -42,12 +42,16 @@ class TestDecideNextStage:
         s = AgentState(stage="plan", schedule=[{"step_id": 1, "step_label": "autolyse"}])
         assert decide_next_stage(s) == "commit"
 
-    def test_commit_advances_to_guide_when_no_conflicts(self):
-        s = AgentState(stage="commit", conflicts=[])
+    def test_commit_advances_to_guide_when_committed(self):
+        s = AgentState(stage="commit", committed=True, schedule=[{"step_id": "enjoy"}])
         assert decide_next_stage(s) == "guide"
 
-    def test_commit_returns_to_plan_when_conflicts_present(self):
-        s = AgentState(stage="commit", conflicts=[{"reason": "busy at 3pm"}])
+    def test_commit_stays_while_waiting_for_user(self):
+        s = AgentState(stage="commit", committed=False, schedule=[{"step_id": "enjoy"}])
+        assert decide_next_stage(s) == "commit"
+
+    def test_commit_returns_to_plan_when_deadline_updated(self):
+        s = AgentState(stage="commit", committed=False, schedule=[])
         assert decide_next_stage(s) == "plan"
 
     def test_guide_stays_while_steps_remain(self):

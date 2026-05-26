@@ -89,6 +89,12 @@ def init_db(path: str) -> sqlite3.Connection:
         "ALTER TABLE bake_sessions ADD COLUMN weather_hour0_temp_c REAL",
         "ALTER TABLE bake_sessions ADD COLUMN weather_hour2_temp_c REAL",
         "ALTER TABLE bake_sessions ADD COLUMN weather_hour5_temp_c REAL",
+        "ALTER TABLE bake_sessions ADD COLUMN deadline_flexibility TEXT",
+        "ALTER TABLE bake_sessions ADD COLUMN committed_at TEXT",
+        "ALTER TABLE bake_sessions ADD COLUMN enjoy_at TEXT",
+        "ALTER TABLE bake_sessions ADD COLUMN warm_water_used INTEGER DEFAULT 0",
+        "ALTER TABLE bake_sessions ADD COLUMN room_temp_proof_used INTEGER DEFAULT 0",
+        "ALTER TABLE bake_sessions ADD COLUMN bench_rest_skipped INTEGER DEFAULT 0",
     ]:
         try:
             conn.execute(ddl)
@@ -124,12 +130,13 @@ def insert_bake_session(
     feeding_ratio: str,
     earliest_start_time: str | None = None,
     thread_id: str | None = None,
+    deadline_flexibility: str | None = None,
 ) -> int:
     cur = conn.execute(
         """INSERT INTO bake_sessions
            (created_at, starter_health, deadline, last_fed_at, feeding_ratio,
-            earliest_start_time, thread_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            earliest_start_time, thread_id, deadline_flexibility)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             created_at,
             starter_health,
@@ -138,6 +145,7 @@ def insert_bake_session(
             feeding_ratio,
             earliest_start_time,
             thread_id,
+            deadline_flexibility,
         ),
     )
     conn.commit()
@@ -285,5 +293,39 @@ def update_session_bake_data(
            SET bake_session_id = ?, bake_phase = ?
            WHERE session_key = ?""",
         (bake_session_id, bake_phase, session_key),
+    )
+    conn.commit()
+
+
+def record_commitment(
+    conn: sqlite3.Connection,
+    bake_session_id: int,
+    enjoy_iso: str | None,
+    adjustments: dict,
+    schedule: list[dict],
+) -> None:
+    """Persist commitment metadata and schedule steps for a confirmed bake plan."""
+    import datetime as _dt
+
+    committed_at = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn.execute(
+        """UPDATE bake_sessions
+           SET committed_at = ?, enjoy_at = ?,
+               warm_water_used = ?, room_temp_proof_used = ?, bench_rest_skipped = ?
+           WHERE id = ?""",
+        (
+            committed_at,
+            enjoy_iso,
+            int(bool(adjustments.get("warm_water_bulk"))),
+            int(bool(adjustments.get("room_temp_proof"))),
+            int(bool(adjustments.get("bench_rest_skipped"))),
+            bake_session_id,
+        ),
+    )
+    conn.executemany(
+        """INSERT INTO bake_schedules
+           (bake_session_id, step_time, step_label, duration_minutes)
+           VALUES (?, ?, ?, ?)""",
+        [(bake_session_id, s["start_iso"], s["label"], s.get("duration_min")) for s in schedule],
     )
     conn.commit()

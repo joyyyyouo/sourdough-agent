@@ -129,6 +129,12 @@ def _parse_intake_dt(iso: str) -> datetime.datetime:
     return dt.replace(tzinfo=None)
 
 
+def _round_to_nearest_5(dt: datetime.datetime) -> datetime.datetime:
+    total_minutes = dt.hour * 60 + dt.minute
+    rounded = round(total_minutes / 5) * 5
+    return dt.replace(hour=rounded // 60, minute=rounded % 60, second=0, microsecond=0)
+
+
 # ---------------------------------------------------------------------------
 # Proof / baking-start helpers
 # ---------------------------------------------------------------------------
@@ -205,6 +211,7 @@ def _build_steps(
     start_iso = state.intake["earliest_start_time"]
     cursor = _parse_intake_dt(start_iso)
     cursor = _clamp_to_normal_hours(cursor)
+    cursor = _round_to_nearest_5(cursor)
 
     temps = state.weather_weighted_temps
     bulk_min = calc_bulk_ferment_duration(
@@ -360,12 +367,12 @@ def build_schedule(state) -> list[dict]:
     return _build_steps(state)
 
 
-def build_optimized_schedule(state) -> tuple[list[dict], list[str]]:
+def build_optimized_schedule(state) -> tuple[list[dict], list[str], dict]:
     """Build the schedule variant that lands Enjoy! closest to the deadline."""
     deadline_iso = state.intake.get("deadline")
     if not deadline_iso:
         schedule = build_schedule(state)
-        return schedule, _build_notes(schedule, {}, None, None)
+        return schedule, _build_notes(schedule, {}, None, None), {}
 
     deadline = _parse_intake_dt(deadline_iso)
 
@@ -418,6 +425,7 @@ def build_optimized_schedule(state) -> tuple[list[dict], list[str]]:
             minutes=_post_proof_min + PLAN_PROOF_MAX_MIN + pre_proof_min
         )
         delayed_start = _clamp_to_normal_hours(delayed_start)
+        delayed_start = _round_to_nearest_5(delayed_start)
         adj_state = copy.copy(state)
         adj_state.intake = {**state.intake, "earliest_start_time": delayed_start.isoformat()}
         delayed_sched = _build_steps(adj_state, deadline=deadline)
@@ -431,7 +439,11 @@ def build_optimized_schedule(state) -> tuple[list[dict], list[str]]:
         best_sched = build_schedule(state)
         best_variant = {}
 
-    return best_sched, _build_notes(best_sched, best_variant, deadline, enjoy_dt(best_sched))
+    return (
+        best_sched,
+        _build_notes(best_sched, best_variant, deadline, enjoy_dt(best_sched)),
+        best_variant,
+    )
 
 
 # ---------------------------------------------------------------------------

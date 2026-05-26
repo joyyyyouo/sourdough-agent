@@ -81,7 +81,7 @@ class TestBuildOptimizedSchedule:
         start = datetime.datetime(2026, 5, 27, 8, 0)  # Tuesday 8am
         deadline = datetime.datetime(2026, 6, 1, 20, 0)  # Sunday 8pm (~108h later)
         state = self._make_state(start.isoformat(), deadline.isoformat())
-        schedule, _ = build_optimized_schedule(state)
+        schedule, _, _ = build_optimized_schedule(state)
         enjoy = next(s for s in schedule if s["step_id"] == "enjoy")
         enjoy_dt = datetime.datetime.fromisoformat(enjoy["start_iso"])
         diff_min = abs((enjoy_dt - deadline).total_seconds()) / 60
