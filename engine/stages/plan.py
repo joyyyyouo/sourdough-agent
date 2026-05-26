@@ -1,3 +1,4 @@
+import copy
 import datetime
 from zoneinfo import ZoneInfo
 
@@ -372,6 +373,13 @@ def build_optimized_schedule(state) -> tuple[list[dict], list[str]]:
         s = next(s for s in sched if s["step_id"] == "enjoy")
         return datetime.datetime.fromisoformat(s["start_iso"])
 
+    # TODO: handle the "deadline is far away" case.
+    # All variants below only compress the schedule (shorten proof, skip bench rest, etc.).
+    # _best_baking_start already stretches cold proof up to 48h toward the deadline, but
+    # if enjoy still lands more than 30 min early after max proof, the right fix is to
+    # delay the big_mix start itself — compute a later earliest_start_time by working
+    # backward from the deadline through all step durations, then rebuild with that start.
+
     best_sched: list[dict] | None = None
     best_dist = float("inf")
     best_variant: dict = {}
@@ -387,6 +395,37 @@ def build_optimized_schedule(state) -> tuple[list[dict], list[str]]:
             best_variant = variant
         if dist <= PLAN_DEADLINE_TOLERANCE_MIN * 60:
             break
+
+    # Deadline-far case: all variants land too early even at max proof → delay the start.
+    if best_sched is not None and enjoy_dt(best_sched) < deadline - datetime.timedelta(
+        minutes=PLAN_DEADLINE_TOLERANCE_MIN
+    ):
+        bulk_min = calc_bulk_ferment_duration(state.weather_weighted_temps)
+        pre_proof_min = (
+            PLAN_MIX_DURATION_MIN
+            + bulk_min
+            + PLAN_SHAPING_DURATION_MIN
+            + PLAN_BENCH_REST_DURATION_MIN
+        )
+        _post_proof_min = (
+            PLAN_PREHEAT_DURATION_MIN
+            + PLAN_SCORE_DURATION_MIN
+            + PLAN_BAKE_LID_ON_MIN
+            + PLAN_BAKE_LID_OFF_MIN
+            + PLAN_REST_DURATION_MIN
+        )
+        delayed_start = deadline - datetime.timedelta(
+            minutes=_post_proof_min + PLAN_PROOF_MAX_MIN + pre_proof_min
+        )
+        delayed_start = _clamp_to_normal_hours(delayed_start)
+        adj_state = copy.copy(state)
+        adj_state.intake = {**state.intake, "earliest_start_time": delayed_start.isoformat()}
+        delayed_sched = _build_steps(adj_state, deadline=deadline)
+        if delayed_sched is not None:
+            dist = abs((enjoy_dt(delayed_sched) - deadline).total_seconds())
+            if dist < best_dist:
+                best_sched = delayed_sched
+                best_variant = {}
 
     if best_sched is None:
         best_sched = build_schedule(state)

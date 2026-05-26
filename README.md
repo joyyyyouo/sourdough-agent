@@ -7,7 +7,7 @@ A conversational AI agent that builds a personalised sourdough baking schedule a
 1. **Readiness check** — learns your experience level and confirms you have the gear
 2. **Intake** — collects starter health, last feeding time, feeding ratio, your deadline, and the earliest you can start
 3. **Weather fetch** — pulls Melbourne's hourly forecast and samples temperature at hour 0, 2, and 5 of your bake window (fermentation speed is highly temperature-sensitive)
-4. **Scheduling** *(coming soon)* — generates an hour-by-hour baking plan from your starter data, deadline, and weather
+4. **Scheduling** — builds an hour-by-hour baking plan from your starter data, deadline, and weather, trying up to 8 schedule variants (skip bench rest, warm water bulk, room-temperature proof, and combinations) to land *Enjoy!* within 30 minutes of your deadline; automatically delays the start when the deadline is far in the future
 5. **Commitment** *(coming soon)* — presents the plan, lets you flag conflicts, and revises until you're happy
 6. **Bake monitoring** *(coming soon)* — walks you through each step, checks you in, and adapts if something goes sideways
 
@@ -76,6 +76,7 @@ engine/
   stages/
     readiness.py    Experience check + equipment checklist (SubmitReadiness tool)
     intake.py       Starter info, deadline, earliest start time (SubmitIntake tool)
+    plan.py         Schedule builder, deadline optimisation, 8-variant search
 
 infra/
   db.py             SQLite schema, migrations, and query helpers
@@ -91,7 +92,7 @@ tests/
 assess_readiness        ← implemented
     → collect_context   ← implemented
     → fetch_weather     ← implemented (auto-stage, no user input)
-    → plan              ← stub
+    → plan              ← implemented (auto-stage, no user input)
     → commit ←──────────────────────┐
          │                          │
     [conflicts]                     │
@@ -116,6 +117,26 @@ Bulk fermentation speed depends heavily on ambient temperature. The `fetch_weath
 | Hour 5 | Reflects conditions during shaping / cold proof handoff |
 
 These values are stored on the `bake_sessions` row (`weather_hour0/2/5_temp_c`) alongside the `scrape_run_id` so the schedule can be reproduced exactly given only the session record.
+
+## Scheduling and deadline optimisation
+
+The `plan` auto-stage builds a schedule from a fixed set of steps:
+
+| Step | Duration |
+|------|----------|
+| The big mix | 15 min |
+| Bulk fermentation + 4× stretch & fold | Q10-adjusted (2h–10h) |
+| Shaping | 20 min |
+| Bench rest | 20 min |
+| Proof (cold) | 12h–48h |
+| Preheat oven | 45 min |
+| Score | 5 min |
+| Bake (lid on / lid off) | 25 + 15 min |
+| Rest | 60 min |
+
+To hit your deadline, the planner tries 8 variants in order — skipping bench rest, using the warm water technique to accelerate bulk fermentation, switching to a room-temperature proof, and combinations of all three. It picks whichever variant lands *Enjoy!* closest to your deadline.
+
+If all variants land too early (deadline is far in the future), the planner works backward from your deadline through the fixed step durations to compute a later start time, using the full 48-hour cold proof as a stretch buffer.
 
 ## Gear checklist
 

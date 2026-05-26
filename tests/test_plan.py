@@ -1,9 +1,13 @@
+import datetime
+
 from config import (
     PLAN_BULK_FERMENT_DURATION_MIN,
     PLAN_BULK_FERMENT_MAX_MIN,
     PLAN_BULK_FERMENT_MIN_MIN,
+    PLAN_DEADLINE_TOLERANCE_MIN,
 )
-from engine.stages.plan import calc_bulk_ferment_duration
+from engine.agent import AgentState
+from engine.stages.plan import build_optimized_schedule, calc_bulk_ferment_duration
 
 
 class TestCalcBulkFermentDuration:
@@ -56,3 +60,32 @@ class TestCalcBulkFermentDuration:
         # 20°C and 28°C average to 24°C → should return base duration
         result = calc_bulk_ferment_duration({"hour_0": 20.0, "hour_2": 28.0})
         assert result == PLAN_BULK_FERMENT_DURATION_MIN
+
+
+class TestBuildOptimizedSchedule:
+    def _make_state(self, start_iso: str, deadline_iso: str) -> AgentState:
+        state = AgentState()
+        state.intake = {
+            "earliest_start_time": start_iso,
+            "deadline": deadline_iso,
+            "starter_health": "active",
+            "last_fed_at": start_iso,
+            "feeding_ratio": "1:1:1",
+        }
+        state.weather_weighted_temps = {"hour_0": 24.0, "hour_2": 24.0}
+        return state
+
+    def test_distant_deadline_delays_start(self):
+        # Deadline 4.5 days away — without the fix, Enjoy! would land ~4 days early.
+        # With the fix, the schedule is rebuilt with a later start so Enjoy! is ≤30 min off.
+        start = datetime.datetime(2026, 5, 27, 8, 0)  # Tuesday 8am
+        deadline = datetime.datetime(2026, 6, 1, 20, 0)  # Sunday 8pm (~108h later)
+        state = self._make_state(start.isoformat(), deadline.isoformat())
+        schedule, _ = build_optimized_schedule(state)
+        enjoy = next(s for s in schedule if s["step_id"] == "enjoy")
+        enjoy_dt = datetime.datetime.fromisoformat(enjoy["start_iso"])
+        diff_min = abs((enjoy_dt - deadline).total_seconds()) / 60
+        assert diff_min <= PLAN_DEADLINE_TOLERANCE_MIN, (
+            f"Enjoy! at {enjoy_dt} is {diff_min:.1f} min from deadline {deadline}; "
+            f"expected within {PLAN_DEADLINE_TOLERANCE_MIN} min"
+        )
