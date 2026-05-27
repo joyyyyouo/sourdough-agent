@@ -56,6 +56,7 @@ class AgentState:
     plan_enjoy_iso: str | None = None
     plan_deadline_delta_min: int | None = None
     plan_adjustments: dict | None = None
+    plan_skipped_steps: list = field(default_factory=list)
 
     # bake lifecycle
     bake_phase: str = "planning"  # planning | monitoring | complete
@@ -239,6 +240,26 @@ def agent_brain(state: AgentState, llm_output: dict) -> AgentState:
         state.plan_deadline_delta_min = None
         state.plan_adjustments = None
 
+    elif state.stage == "commit" and name == "ReportConflict":
+        new_windows = [
+            {"from_iso": w["from_iso"], "to_iso": w["to_iso"], "reason": w.get("reason")}
+            for w in args["windows"]
+        ]
+        state.conflicts = state.conflicts + new_windows
+        state.schedule = []
+        state.plan_enjoy_iso = None
+        state.plan_deadline_delta_min = None
+        state.plan_adjustments = None
+        conn = db.init_db(DB_PATH)
+        try:
+            if state.bake_session_id:
+                # TODO: key mismatch — conflict dicts use from_iso/to_iso but
+                # insert_user_availability expects unavailable_from/unavailable_to;
+                # this call raises KeyError (infra/db.py:190)
+                db.insert_user_availability(conn, state.bake_session_id, new_windows)
+        finally:
+            conn.close()
+
     return state
 
 
@@ -325,8 +346,11 @@ def _do_plan(state: AgentState) -> AgentState:
     """Compute the bake schedule (deadline-optimised) and store metadata on state."""
     from engine.stages import plan as plan_module
 
-    schedule, _notes, variant = plan_module.build_optimized_schedule(state)
+    schedule, _notes, variant, skipped_steps = plan_module.build_optimized_schedule(
+        state, conflicts=state.conflicts
+    )
     state.schedule = schedule
+    state.plan_skipped_steps = skipped_steps
 
     enjoy_step = next((s for s in schedule if s["step_id"] == "enjoy"), None)
     if enjoy_step:
@@ -346,12 +370,11 @@ def _do_plan(state: AgentState) -> AgentState:
 
 
 def _do_commit_present(state: AgentState) -> AgentState:
-    """Generate and append the commit presentation message via the commit LLM."""
-    llm_output = generate_response(state)
-    text = llm_output["text"]
-    if text:
-        state.messages.append({"role": "assistant", "content": text})
-    state = agent_brain(state, llm_output)
+    """Build the initial commit presentation directly (no LLM) and append it."""
+    from engine.stages.commit import build_commit_message
+
+    message = build_commit_message(state)
+    state.messages.append({"role": "assistant", "content": message})
     return state
 
 

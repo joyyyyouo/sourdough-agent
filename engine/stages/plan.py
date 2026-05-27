@@ -135,6 +135,30 @@ def _round_to_nearest_5(dt: datetime.datetime) -> datetime.datetime:
     return dt.replace(hour=rounded // 60, minute=rounded % 60, second=0, microsecond=0)
 
 
+def _is_waking_hours(dt: datetime.datetime) -> bool:
+    """True if dt falls within waking hours (8am ≤ hour < 10pm)."""
+    return PLAN_NORMAL_HOURS_START <= dt.hour < PLAN_NORMAL_HOURS_END
+
+
+def _parse_conflict_dt(iso: str) -> datetime.datetime:
+    """Parse a conflict ISO string as naive local time."""
+    dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    return dt.replace(tzinfo=None)
+
+
+def _clashes(step: dict, conflicts: list[dict]) -> bool:
+    """True if the step's window overlaps any conflict window."""
+    step_start = datetime.datetime.fromisoformat(step["start_iso"])
+    # Treat zero-duration steps as 1 min so point-in-time steps can still clash.
+    step_end = step_start + datetime.timedelta(minutes=max(step["duration_min"], 1))
+    for c in conflicts:
+        c_start = _parse_conflict_dt(c["from_iso"])
+        c_end = _parse_conflict_dt(c["to_iso"])
+        if step_start < c_end and step_end > c_start:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Proof / baking-start helpers
 # ---------------------------------------------------------------------------
@@ -206,8 +230,18 @@ def _build_steps(
     warm_water_bulk: bool = False,
     room_temp_proof: bool = False,
     deadline: datetime.datetime | None = None,
-) -> list[dict] | None:
-    """Build a schedule variant.  Returns None if the variant is infeasible."""
+    conflicts: list[dict] | None = None,
+) -> tuple[list[dict], list[str]] | None:
+    """Build a schedule variant.
+
+    Returns (steps, skipped_step_ids) or None if the variant is infeasible.
+
+    Active steps that clash with a conflict window are handled as follows:
+    - skippable steps (sf_1–sf_4): silently dropped, their IDs collected in skipped_step_ids
+    - non-skippable steps: variant is infeasible → return None
+    Passive steps are never checked for clashes.
+    """
+    conflicts = conflicts or []
     start_iso = state.intake["earliest_start_time"]
     cursor = _parse_intake_dt(start_iso)
     cursor = _clamp_to_normal_hours(cursor)
@@ -228,20 +262,24 @@ def _build_steps(
     )
 
     steps: list[dict] = []
+    skipped: list[str] = []
 
-    # Big mix
-    steps.append(
-        {
-            "step_id": "big_mix",
-            "label": "The big mix",
-            "start_iso": cursor.isoformat(),
-            "duration_min": PLAN_MIX_DURATION_MIN,
-            "substep": False,
-        }
-    )
+    # Big mix (active, not skippable)
+    big_mix = {
+        "step_id": "big_mix",
+        "label": "The big mix",
+        "start_iso": cursor.isoformat(),
+        "duration_min": PLAN_MIX_DURATION_MIN,
+        "substep": False,
+        "active": True,
+        "skippable": False,
+    }
+    if conflicts and _clashes(big_mix, conflicts):
+        return None
+    steps.append(big_mix)
     cursor += datetime.timedelta(minutes=PLAN_MIX_DURATION_MIN)
 
-    # Bulk fermentation + stretch & fold sub-steps
+    # Bulk fermentation (passive, not skippable)
     bulk_start = cursor
     steps.append(
         {
@@ -250,35 +288,51 @@ def _build_steps(
             "start_iso": cursor.isoformat(),
             "duration_min": bulk_min,
             "substep": False,
+            "active": False,
+            "skippable": False,
         }
     )
+
+    # Stretch & fold sub-steps (active, skippable)
     sf_cursor = bulk_start + datetime.timedelta(minutes=PLAN_SF_INTERVAL_MIN)
     for i in range(1, PLAN_SF_COUNT + 1):
-        steps.append(
-            {
-                "step_id": f"sf_{i}",
-                "label": f"Stretch & fold set {i}",
-                "start_iso": sf_cursor.isoformat(),
-                "duration_min": PLAN_SF_ACTIVE_MIN,
-                "substep": True,
-            }
-        )
+        sf_step = {
+            "step_id": f"sf_{i}",
+            "label": f"Stretch & fold set {i}",
+            "start_iso": sf_cursor.isoformat(),
+            "duration_min": PLAN_SF_ACTIVE_MIN,
+            "substep": True,
+            "active": True,
+            "skippable": True,
+        }
+        if not _is_waking_hours(sf_cursor) or (conflicts and _clashes(sf_step, conflicts)):
+            skipped.append(f"sf_{i}")
+        else:
+            steps.append(sf_step)
         sf_cursor += datetime.timedelta(minutes=PLAN_SF_INTERVAL_MIN)
+
     cursor += datetime.timedelta(minutes=bulk_min)
 
-    # Shaping
-    steps.append(
-        {
-            "step_id": "shaping",
-            "label": "Shaping",
-            "start_iso": cursor.isoformat(),
-            "duration_min": PLAN_SHAPING_DURATION_MIN,
-            "substep": False,
-        }
-    )
+    # Guard: shaping must land within waking hours — long bulk ferments can push it to 2am.
+    if not _is_waking_hours(cursor):
+        return None
+
+    # Shaping (active, not skippable)
+    shaping = {
+        "step_id": "shaping",
+        "label": "Shaping",
+        "start_iso": cursor.isoformat(),
+        "duration_min": PLAN_SHAPING_DURATION_MIN,
+        "substep": False,
+        "active": True,
+        "skippable": False,
+    }
+    if conflicts and _clashes(shaping, conflicts):
+        return None
+    steps.append(shaping)
     cursor += datetime.timedelta(minutes=PLAN_SHAPING_DURATION_MIN)
 
-    # Bench rest (optional)
+    # Bench rest (passive, skippable — variant flag or future conflict logic)
     if not skip_bench_rest:
         steps.append(
             {
@@ -287,6 +341,8 @@ def _build_steps(
                 "start_iso": cursor.isoformat(),
                 "duration_min": PLAN_BENCH_REST_DURATION_MIN,
                 "substep": False,
+                "active": False,
+                "skippable": True,
             }
         )
         cursor += datetime.timedelta(minutes=PLAN_BENCH_REST_DURATION_MIN)
@@ -321,27 +377,32 @@ def _build_steps(
             "start_iso": proof_start.isoformat(),
             "duration_min": proof_min,
             "substep": False,
+            "active": False,
+            "skippable": False,
         }
     )
     cursor = baking_start
 
     # Post-proof steps
-    for step_id, label, duration in [
-        ("preheat", "Preheat oven", PLAN_PREHEAT_DURATION_MIN),
-        ("score", "Score", PLAN_SCORE_DURATION_MIN),
-        ("bake_lid_on", "Bake (lid on)", PLAN_BAKE_LID_ON_MIN),
-        ("bake_lid_off", "Bake (lid off)", PLAN_BAKE_LID_OFF_MIN),
-        ("rest", "Rest", PLAN_REST_DURATION_MIN),
+    for step_id, label, duration, is_active in [
+        ("preheat", "Preheat oven", PLAN_PREHEAT_DURATION_MIN, True),
+        ("score", "Score", PLAN_SCORE_DURATION_MIN, True),
+        ("bake_lid_on", "Bake (lid on)", PLAN_BAKE_LID_ON_MIN, True),
+        ("bake_lid_off", "Bake (lid off)", PLAN_BAKE_LID_OFF_MIN, True),
+        ("rest", "Rest", PLAN_REST_DURATION_MIN, False),
     ]:
-        steps.append(
-            {
-                "step_id": step_id,
-                "label": label,
-                "start_iso": cursor.isoformat(),
-                "duration_min": duration,
-                "substep": False,
-            }
-        )
+        step = {
+            "step_id": step_id,
+            "label": label,
+            "start_iso": cursor.isoformat(),
+            "duration_min": duration,
+            "substep": False,
+            "active": is_active,
+            "skippable": False,
+        }
+        if conflicts and is_active and _clashes(step, conflicts):
+            return None
+        steps.append(step)
         cursor += datetime.timedelta(minutes=duration)
 
     steps.append(
@@ -351,10 +412,12 @@ def _build_steps(
             "start_iso": cursor.isoformat(),
             "duration_min": 0,
             "substep": False,
+            "active": False,
+            "skippable": False,
         }
     )
 
-    return steps
+    return steps, skipped
 
 
 # ---------------------------------------------------------------------------
@@ -364,15 +427,25 @@ def _build_steps(
 
 def build_schedule(state) -> list[dict]:
     """Natural schedule without deadline optimisation."""
-    return _build_steps(state)
+    result = _build_steps(state)
+    return result[0] if result else []
 
 
-def build_optimized_schedule(state) -> tuple[list[dict], list[str], dict]:
-    """Build the schedule variant that lands Enjoy! closest to the deadline."""
+def build_optimized_schedule(
+    state, conflicts: list[dict] | None = None
+) -> tuple[list[dict], list[str], dict, list[str]]:
+    """Build the schedule variant that lands Enjoy! closest to the deadline.
+
+    Returns (schedule, notes, best_variant, skipped_step_ids).
+    """
+    conflicts = conflicts or []
     deadline_iso = state.intake.get("deadline")
     if not deadline_iso:
-        schedule = build_schedule(state)
-        return schedule, _build_notes(schedule, {}, None, None), {}
+        result = _build_steps(state, conflicts=conflicts)
+        if result is None:
+            return [], [], {}, []
+        schedule, skipped = result
+        return schedule, _build_notes(schedule, {}, None, None), {}, skipped
 
     deadline = _parse_intake_dt(deadline_iso)
 
@@ -380,25 +453,21 @@ def build_optimized_schedule(state) -> tuple[list[dict], list[str], dict]:
         s = next(s for s in sched if s["step_id"] == "enjoy")
         return datetime.datetime.fromisoformat(s["start_iso"])
 
-    # TODO: handle the "deadline is far away" case.
-    # All variants below only compress the schedule (shorten proof, skip bench rest, etc.).
-    # _best_baking_start already stretches cold proof up to 48h toward the deadline, but
-    # if enjoy still lands more than 30 min early after max proof, the right fix is to
-    # delay the big_mix start itself — compute a later earliest_start_time by working
-    # backward from the deadline through all step durations, then rebuild with that start.
-
     best_sched: list[dict] | None = None
+    best_skipped: list[str] = []
     best_dist = float("inf")
     best_variant: dict = {}
 
     for variant in _VARIANTS:
-        sched = _build_steps(state, deadline=deadline, **variant)
-        if sched is None:
+        result = _build_steps(state, deadline=deadline, conflicts=conflicts, **variant)
+        if result is None:
             continue
+        sched, skipped = result
         dist = abs((enjoy_dt(sched) - deadline).total_seconds())
         if dist < best_dist:
             best_dist = dist
             best_sched = sched
+            best_skipped = skipped
             best_variant = variant
         if dist <= PLAN_DEADLINE_TOLERANCE_MIN * 60:
             break
@@ -428,21 +497,33 @@ def build_optimized_schedule(state) -> tuple[list[dict], list[str], dict]:
         delayed_start = _round_to_nearest_5(delayed_start)
         adj_state = copy.copy(state)
         adj_state.intake = {**state.intake, "earliest_start_time": delayed_start.isoformat()}
-        delayed_sched = _build_steps(adj_state, deadline=deadline)
-        if delayed_sched is not None:
+        result = _build_steps(adj_state, deadline=deadline, conflicts=conflicts)
+        if result is not None:
+            delayed_sched, delayed_skipped = result
             dist = abs((enjoy_dt(delayed_sched) - deadline).total_seconds())
             if dist < best_dist:
                 best_sched = delayed_sched
+                best_skipped = delayed_skipped
                 best_variant = {}
 
     if best_sched is None:
-        best_sched = build_schedule(state)
+        # All conflict-aware variants failed — fall back to unconstrained schedule so the
+        # commit stage can show the plan and flag remaining hard clashes to the user.
+        result = _build_steps(state)
+        if result is not None:
+            best_sched, best_skipped = result
+        else:
+            best_sched = []
+            best_skipped = []
         best_variant = {}
 
     return (
         best_sched,
-        _build_notes(best_sched, best_variant, deadline, enjoy_dt(best_sched)),
+        _build_notes(best_sched, best_variant, deadline, enjoy_dt(best_sched))
+        if best_sched
+        else [],
         best_variant,
+        best_skipped,
     )
 
 

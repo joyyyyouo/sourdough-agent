@@ -2,56 +2,27 @@ import datetime
 
 from pydantic import BaseModel, Field
 
+# System prompt for SUBSEQUENT turns in the commit stage (after the initial schedule
+# presentation has already been sent directly by the engine).
 _SYSTEM_TEMPLATE = """\
 You are {bot_name}, a warm and knowledgeable sourdough baking assistant.
 
-You have just computed the best possible bake schedule for the user. \
-Your job is to present it and get their commitment — or negotiate a new target time if needed.
+The baking schedule has already been presented to the user.
+Today (Melbourne time) is {today}.
 
-## Schedule
+## Schedule (reference)
 ```
 {schedule_table}
 ```
 
-## Step descriptions (use these when explaining what each step involves)
-- **The big mix**: Combine starter, flour, water, and salt into a shaggy dough. \
-No kneading yet — just bring it together.
-- **Stretch & fold**: Every 30 minutes, stretch the dough up and fold it over itself \
-(4 sides). Builds gluten strength without traditional kneading.
-- **Bulk ferment**: Leave the dough covered at room temperature. \
-Yeast and bacteria develop flavour and gas. The dough should grow noticeably.
-- **Bench rest**: After shaping, rest the dough uncovered for a short time. \
-Relaxes the gluten so the final shape holds.
-- **Shape**: Gently form the dough into its final loaf shape and place in the banneton.
-- **Proof (cold)**: Slow cold proof in the fridge. Develops flavour and makes \
-the dough easier to score. Can be left overnight.
-- **Proof (room temp)**: Faster proof at room temperature used when time is short. \
-Requires more attention — don't let it over-proof.
-- **Preheat**: Heat the Dutch oven in the oven to very high temperature. \
-Critical for oven spring.
-- **Score**: Slash the top of the loaf just before baking. \
-Controls where the bread expands.
-- **Bake (lid on)**: Steam trapped under the lid keeps the crust soft so the loaf \
-can spring up fully.
-- **Bake (lid off)**: Removing the lid lets the crust colour and crisp.
-- **Rest**: Do not cut the loaf yet — the crumb is still setting inside. \
-Cutting too early gives a gummy texture.
-- **Enjoy!**: The loaf is ready to eat.
-
-## Situation
-{situation}
-
-## Your task
-{task}
-
 Guidelines:
-- Be warm and direct.
 - If the user says yes / confirms / agrees, call `CommitPlan` immediately.
-- If the user gives a different target time, extract it as an ISO-8601 datetime \
-and call `UpdateDeadline`. Today (Melbourne time) is {today}.
-- If the user asks what a step involves or why it's needed, explain it using \
-the step descriptions above. Keep the explanation brief and practical.
-- If the user asks to see the full schedule again, repeat the table above verbatim.
+- If the user gives a different target time, extract it as ISO-8601 and call `UpdateDeadline`.
+- If the user mentions they are unavailable during a time window (e.g. "I have dinner \
+from 7–9pm"), call `ReportConflict` with ISO-8601 from/to windows.
+- Only answer questions about steps or the schedule when explicitly asked. \
+Do not volunteer explanations unprompted.
+- Stay strictly on topic.
 """
 
 
@@ -67,6 +38,18 @@ class UpdateDeadline(BaseModel):
     )
 
 
+class ConflictWindow(BaseModel):
+    from_iso: str = Field(description="Start of unavailable window in ISO-8601.")
+    to_iso: str = Field(description="End of unavailable window in ISO-8601.")
+    reason: str | None = Field(default=None, description="Optional description, e.g. 'dinner'.")
+
+
+class ReportConflict(BaseModel):
+    """Call when the user flags one or more windows where they are unavailable."""
+
+    windows: list[ConflictWindow]
+
+
 _llm = None
 
 
@@ -75,7 +58,7 @@ def get_llm():
     if _llm is None:
         from llm import make_llm
 
-        _llm = make_llm([CommitPlan, UpdateDeadline])
+        _llm = make_llm([CommitPlan, UpdateDeadline, ReportConflict])
     return _llm
 
 
@@ -83,78 +66,110 @@ def _fmt_time(iso: str) -> str:
     return datetime.datetime.fromisoformat(iso).strftime("%a %H:%M")
 
 
-def _build_situation_and_task(state) -> tuple[str, str]:
-    """Return (situation, task) strings for the commit LLM system prompt.
+def _step_clashes_any(step: dict, conflicts: list[dict]) -> str | None:
+    """Return the reason of the first conflict that clashes with step, or None."""
+    step_start = datetime.datetime.fromisoformat(step["start_iso"])
+    step_end = step_start + datetime.timedelta(minutes=max(step.get("duration_min") or 0, 1))
+    for c in conflicts:
+        c_start = datetime.datetime.fromisoformat(c["from_iso"].replace("Z", "+00:00")).replace(
+            tzinfo=None
+        )
+        c_end = datetime.datetime.fromisoformat(c["to_iso"].replace("Z", "+00:00")).replace(
+            tzinfo=None
+        )
+        if step_start < c_end and step_end > c_start:
+            return c.get("reason") or "your unavailability window"
+    return None
 
-    Case A — within deadline window (|delta| ≤ 30 min), no high-impact adjustments:
-        Present the schedule and ask the user to commit.
 
-    Case B — within deadline window but high-impact adjustments used
-              (warm water bulk OR room-temperature proof):
-        Warn that the bake needs close monitoring. If deadline_flexibility is
-        'flexible', also suggest a later target for a more relaxed bake.
+_STEP_LABELS = {
+    "sf_1": "S&F set 1",
+    "sf_2": "S&F set 2",
+    "sf_3": "S&F set 3",
+    "sf_4": "S&F set 4",
+    "bench_rest": "Bench rest",
+}
 
-    Case C — outside deadline window (|delta| > 30 min):
-        Report the closest achievable Enjoy! time and ask whether the user
-        wants to adjust their target or proceed anyway.
+
+def build_commit_message(state) -> str:
+    """Construct the initial commit-stage presentation directly from state (no LLM).
+
+    Structure:
+        ```schedule table```
+
+        [Case B] ⚠️ monitoring warning
+        [Case C] ⚠️ deadline-miss one-liner
+        [conflict re-plan] ℹ️ skipped-step notes
+        [hard clash] ⚠️ clash warnings
+
+        Closing question
     """
+    from engine.stages.plan import format_schedule
+
+    table = format_schedule(state.schedule)
     delta = state.plan_deadline_delta_min or 0
     adjustments = state.plan_adjustments or {}
     flexibility = state.intake.get("deadline_flexibility", "firm")
     enjoy_iso = state.plan_enjoy_iso
     deadline_iso = state.intake.get("deadline", "")
+    conflicts = state.conflicts or []
+    skipped_steps = getattr(state, "plan_skipped_steps", [])
 
     within_window = abs(delta) <= 30
     high_impact = adjustments.get("warm_water_bulk") or adjustments.get("room_temp_proof")
 
+    parts: list[str] = [f"```\n{table}\n```"]
+
     if not within_window:
-        enjoy_display = _fmt_time(enjoy_iso) if enjoy_iso else "an unknown time"
+        # Case C — deadline miss
+        enjoy_display = _fmt_time(enjoy_iso) if enjoy_iso else "unknown"
         deadline_display = _fmt_time(deadline_iso) if deadline_iso else "your target"
         direction = "late" if delta > 0 else "early"
-        situation = (
-            f"Unfortunately I couldn't find a plan that meets your target of {deadline_display}. "
-            f"The closest I can get is Enjoy! at {enjoy_display} "
-            f"({abs(delta)} min {direction})."
-        )
-        task = (
-            "Explain this clearly and ask if they'd like to adjust their target time "
-            "(call UpdateDeadline with the new time), or proceed with this schedule anyway "
-            "(call CommitPlan)."
+        parts.append(
+            f"⚠️ Best I can do is finish the bake at {enjoy_display} — "
+            f"{abs(delta)} min {direction} your target of {deadline_display}."
         )
     elif high_impact:
+        # Case B — met deadline via accelerated techniques
         techniques = []
         if adjustments.get("warm_water_bulk"):
-            techniques.append("warm water bulk acceleration")
+            techniques.append("warm water bulk")
         if adjustments.get("room_temp_proof"):
-            techniques.append("room temperature proof")
-        tech_str = " and ".join(techniques)
-        situation = (
-            f"This schedule meets your target using {tech_str}. "
-            "These techniques speed up fermentation but make timing more sensitive — "
-            "you'll need to watch the dough closely rather than rely purely on the clock."
+            techniques.append("room-temp proof")
+        tech_str = " + ".join(techniques)
+        warning = (
+            f"⚠️ Needs close monitoring — uses {tech_str}, so timing is more sensitive than usual."
         )
         if flexibility == "flexible":
-            task = (
-                "Walk through the schedule step by step so the user knows what they're "
-                "committing to. Note the techniques used and the need for close monitoring. "
-                "Also mention that since their deadline has some flexibility, a slightly later "
-                "target would allow a more relaxed, standard bake. "
-                "Ask clearly: do they want to commit to this plan, or try a later time?"
-            )
-        else:
-            task = (
-                "Walk through the schedule step by step so the user knows what they're "
-                "committing to. Note the techniques used and the need for close monitoring. "
-                "Ask clearly: are they comfortable proceeding with this plan?"
-            )
-    else:
-        situation = "This schedule comfortably meets your target."
-        task = (
-            "Walk through the schedule step by step so the user knows exactly what's ahead. "
-            "Then ask clearly: are they ready to commit to this plan?"
-        )
+            warning += " A later target would make for a more relaxed bake."
+        parts.append(warning)
 
-    return situation, task
+    # Skipped-step notes from conflict re-plan
+    # TODO: personalise verbosity by user_experience_level
+    # (beginner = silent, intermediate/experienced = show note)
+    if skipped_steps and conflicts:
+        for step_id in skipped_steps:
+            label = _STEP_LABELS.get(step_id, step_id)
+            parts.append(f"ℹ️ {label} skipped — clashed with your unavailability window.")
+
+    # Hard-clash warnings: active non-skippable steps that still overlap a conflict window
+    if conflicts and state.schedule:
+        for step in state.schedule:
+            if step.get("active") and not step.get("skippable"):
+                reason = _step_clashes_any(step, conflicts)
+                if reason:
+                    parts.append(
+                        f"⚠️ {step['label']} at {_fmt_time(step['start_iso'])} still clashes"
+                        f" with {reason}. Adjust your start time, deadline, or availability?"
+                    )
+
+    # Closing question
+    if not within_window:
+        parts.append("Want to try a different finish time, or shall I go with this plan?")
+    else:
+        parts.append("Ready to lock this in? Let me know if any steps clash with your schedule.")
+
+    return "\n\n".join(parts)
 
 
 def build_system(bot_name: str, state) -> str:
@@ -163,12 +178,9 @@ def build_system(bot_name: str, state) -> str:
     from engine.stages.plan import format_schedule
 
     table = format_schedule(state.schedule)
-    situation, task = _build_situation_and_task(state)
     today = datetime.datetime.now(ZoneInfo("Australia/Melbourne")).strftime("%Y-%m-%dT%H:%M:%S")
     return _SYSTEM_TEMPLATE.format(
         bot_name=bot_name,
         schedule_table=table,
-        situation=situation,
-        task=task,
         today=today,
     )
