@@ -1,5 +1,6 @@
 import datetime
 import sqlite3
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
@@ -12,13 +13,14 @@ You are {bot_name}, a warm and knowledgeable sourdough baking assistant. \
 The user has already been welcomed and confirmed they are ready to bake. \
 Do not re-introduce yourself.
 
-Your goal is to gather five pieces of information through natural conversation:
+Your goal is to gather six pieces of information through natural conversation:
 
 1. **starter_health** – how active/healthy their sourdough starter is right now
 2. **deadline** – when they want the loaf freshly baked and ready to eat
-3. **last_fed_at** – when they last fed their starter
-4. **feeding_ratio** – the ratio they use when feeding (e.g. 1:1:1 or 1:5:5)
-5. **earliest_start_time** – the earliest moment they can begin the bake today
+3. **deadline_flexibility** – whether that deadline is firm or if some flexibility is okay
+4. **last_fed_at** – when they last fed their starter
+5. **feeding_ratio** – the ratio they use when feeding (e.g. 1:1:1 or 1:5:5)
+6. **earliest_start_time** – the earliest moment they can begin the bake today
 
 Guidelines:
 - Stay strictly on topic. Do not engage in small talk, answer unrelated questions, \
@@ -28,14 +30,16 @@ back to the intake questions.
 - Always give examples or options to open-ended questions to help beginners answer \
 more precisely.
 - If the user gives a relative time like "this morning" or "tomorrow breakfast", \
-clarify and convert to an explicit date and time. Today (UTC) is {today}.
-- Once you have all five fields confirmed, call the `SubmitIntake` tool. \
+clarify and convert to an explicit date and time. Today (Melbourne time) is {today}.
+- When collecting the deadline, follow up with a quick question about flexibility: \
+"Is that time firm, or is some flexibility okay?" Record the answer as 'firm' or 'flexible'.
+- Once you have all six fields confirmed, call the `SubmitIntake` tool. \
 Do not call it until you are sure about every field.\
 """
 
 
 class SubmitIntake(BaseModel):
-    """Call this ONLY when all five fields have been confirmed by the user.
+    """Call this ONLY when all six fields have been confirmed by the user.
     Do not guess any field."""
 
     starter_health: str = Field(
@@ -48,6 +52,12 @@ class SubmitIntake(BaseModel):
         description=(
             "ISO-8601 datetime when the user wants a freshly baked loaf."
             " E.g. '2026-04-22T09:00:00'."
+        )
+    )
+    deadline_flexibility: str = Field(
+        description=(
+            "Whether the deadline is fixed or has wiggle room. "
+            "Must be exactly 'firm' or 'flexible'."
         )
     )
     last_fed_at: str = Field(
@@ -74,8 +84,11 @@ def get_llm():
     return _llm
 
 
+_MELBOURNE_TZ = ZoneInfo("Australia/Melbourne")
+
+
 def build_system(bot_name: str) -> str:
-    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    today = datetime.datetime.now(_MELBOURNE_TZ).strftime("%Y-%m-%dT%H:%M:%S")
     return SYSTEM_PROMPT.format(today=today, bot_name=bot_name)
 
 
@@ -92,6 +105,7 @@ def handle_submit(args: dict, session_key: str, thread_id: str | None) -> dict:
         feeding_ratio=args["feeding_ratio"],
         earliest_start_time=args["earliest_start_time"],
         thread_id=thread_id,
+        deadline_flexibility=args.get("deadline_flexibility"),
     )
     if not session_key:
         raise ValueError("session_key missing from state during intake submission")

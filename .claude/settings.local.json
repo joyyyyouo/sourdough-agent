@@ -10,7 +10,8 @@
       "Read(//c/Users/horng/anaconda3/bin/**)",
       "Read(//c/Users/horng/**)",
       "Bash(/c/Users/horng/AppData/Local/Python/bin/pip install *)",
-      "Bash(/c/Users/horng/AppData/Local/Python/bin/python3 *)"
+      "Bash(/c/Users/horng/AppData/Local/Python/bin/python3 *)",
+      "Bash(python -m pytest)"
     ]
   }
 }

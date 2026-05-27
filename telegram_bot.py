@@ -18,6 +18,23 @@ _service = BakingAgentService()
 _session_locks: dict[int, asyncio.Lock] = {}
 
 
+def _split_message(text: str, max_len: int = 4000) -> list[str]:
+    """Split text into chunks that each fit within Telegram's 4096-char message limit."""
+    if len(text) <= max_len:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+        split_at = text.rfind("\n", 0, max_len)
+        if split_at <= 0:
+            split_at = max_len
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return chunks
+
+
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -114,12 +131,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     assistant_msgs = [m["content"] for m in messages if m.get("role") == "assistant"]
 
     if len(assistant_msgs) > 1:
-        await update.message.reply_text(
+        full = (
             f"Welcome back! Here's where we left off:\n\n{assistant_msgs[-1]}\n\n"
             "(Use /reset to start a fresh bake session.)"
         )
+        for chunk in _split_message(full):
+            await update.message.reply_text(chunk)
     elif assistant_msgs:
-        await update.message.reply_text(assistant_msgs[0])
+        for chunk in _split_message(assistant_msgs[0]):
+            await update.message.reply_text(chunk)
     else:
         await update.message.reply_text("Hello! Ready to bake some sourdough?")
 
@@ -161,9 +181,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         session_key, thread_id, bot_name = await _run_sync(_get_or_create_session, chat_id)
 
     state = await _run_sync(_service.get_state, thread_id)
-    if state.get("intake_complete"):
+    if state.get("stage") == "complete":
         await update.message.reply_text(
-            "Your bake plan is already complete! Use /reset to start a new bake session."
+            "Your bake session is complete! Use /reset to start a new bake session."
         )
         return
 
@@ -189,13 +209,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     for response in result.get("_responses") or []:
-        if response:
-            await update.message.reply_text(response)
-
-    if result.get("schedule"):
-        await update.message.reply_text(
-            "Schedule locked in! Use /reset to start a new bake session."
-        )
+        for chunk in _split_message(response):
+            await update.message.reply_text(chunk)
 
 
 def main() -> None:
