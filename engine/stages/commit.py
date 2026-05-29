@@ -144,10 +144,9 @@ def build_commit_message(state) -> str:
             warning += " A later target would make for a more relaxed bake."
         parts.append(warning)
 
-    # Skipped-step notes from conflict re-plan
-    # TODO: personalise verbosity by user_experience_level
-    # (beginner = silent, intermediate/experienced = show note)
-    if skipped_steps and conflicts:
+    # Skipped-step notes from conflict re-plan (hidden for beginners)
+    experience = getattr(state, "user_experience_level", None)
+    if skipped_steps and conflicts and experience != "beginner":
         for step_id in skipped_steps:
             label = _STEP_LABELS.get(step_id, step_id)
             parts.append(f"ℹ️ {label} skipped — clashed with your unavailability window.")

@@ -253,10 +253,18 @@ def agent_brain(state: AgentState, llm_output: dict) -> AgentState:
         conn = db.init_db(DB_PATH)
         try:
             if state.bake_session_id:
-                # TODO: key mismatch — conflict dicts use from_iso/to_iso but
-                # insert_user_availability expects unavailable_from/unavailable_to;
-                # this call raises KeyError (infra/db.py:190)
-                db.insert_user_availability(conn, state.bake_session_id, new_windows)
+                db.insert_user_availability(
+                    conn,
+                    state.bake_session_id,
+                    [
+                        {
+                            "unavailable_from": w["from_iso"],
+                            "unavailable_to": w["to_iso"],
+                            "reason": w.get("reason"),
+                        }
+                        for w in new_windows
+                    ],
+                )
         finally:
             conn.close()
 
