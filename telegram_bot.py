@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import logging
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -32,6 +33,27 @@ def _split_message(text: str, max_len: int = 4000) -> list[str]:
             split_at = max_len
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
+    return chunks
+
+
+def _split_by_paragraphs(text: str) -> list[str]:
+    """Split on \\n\\n paragraph boundaries, keeping code blocks whole.
+
+    Falls back to _split_message for any paragraph exceeding 4000 chars.
+    """
+    segments = re.split(r"(```[\s\S]*?```)", text)
+    paragraphs: list[str] = []
+    for seg in segments:
+        if seg.startswith("```"):
+            paragraphs.append(seg)
+        else:
+            for para in re.split(r"\n\n+", seg):
+                para = para.strip()
+                if para:
+                    paragraphs.append(para)
+    chunks: list[str] = []
+    for para in paragraphs:
+        chunks.extend(_split_message(para))
     return chunks
 
 
@@ -209,7 +231,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     for response in result.get("_responses") or []:
-        for chunk in _split_message(response):
+        chunks = _split_by_paragraphs(response)
+        for i, chunk in enumerate(chunks):
+            if i > 0:
+                await asyncio.sleep(1)
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             await update.message.reply_text(chunk)
 
 
