@@ -418,14 +418,34 @@ def agent_step(state: AgentState, user_input: str) -> tuple[AgentState, str]:
     if user_input:
         state.messages.append({"role": "user", "content": user_input})
 
+    # Enforce invariant: the deterministic schedule code block must always precede
+    # any LLM call for the commit stage. Guards against run_auto_stages exiting
+    # early (e.g. plan returned an empty schedule), which would leave the commit
+    # LLM with no prior presentation in history and cause it to generate a verbose
+    # prose description of the steps instead of waiting for confirmation.
+    if state.stage == "commit":
+        commit_start = state.stage_boundaries.get("commit", 0)
+        has_commit_msg = any(
+            m.get("role") == "assistant" and m.get("content") for m in state.messages[commit_start:]
+        )
+        if not has_commit_msg:
+            state = _do_commit_present(state)
+
     llm_output = generate_response(state)
     state = agent_brain(state, llm_output)
 
     response_text = llm_output["text"]
-    if response_text:
+    next_stage = decide_next_stage(state)
+
+    # Suppress transitional LLM text when auto-stages are about to produce real
+    # output (the plan pipeline appends the schedule code block). Without this,
+    # a "Got it, planning now…" message from the collect_context LLM would appear
+    # before the code block in the same Telegram response sequence.
+    if response_text and not (
+        next_stage != state.stage and next_stage in ("fetch_weather", "plan")
+    ):
         state.messages.append({"role": "assistant", "content": response_text})
 
-    next_stage = decide_next_stage(state)
     if next_stage != state.stage:
         state.stage_boundaries[next_stage] = len(state.messages)
     state.stage = next_stage
